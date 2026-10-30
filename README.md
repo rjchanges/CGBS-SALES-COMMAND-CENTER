@@ -1,0 +1,2 @@
+# CGBS-SALES-COMMAND-CENTER
+CGBS CRM for sales team
