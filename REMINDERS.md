@@ -1,0 +1,7 @@
+# Reminder delivery setup
+
+The API currently provides persistent in-app reminders. `apps/api` runs a scheduler every 15 seconds and atomically records each due reminder as an inbox notification. Delivery is idempotent by reminder ID and notification records are preserved in the JSON store. No third-party push provider or Web Push package is configured in this repository.
+
+Browser push while the CRM is closed is therefore not enabled. To add it, provision a VAPID key pair and sender identity, then configure `WEB_PUSH_PUBLIC_KEY`, `WEB_PUSH_PRIVATE_KEY`, and `WEB_PUSH_SUBJECT` in the API environment. The implementation also needs a service worker, authenticated subscription registration/storage, unsubscribe handling, expiry cleanup, and an idempotent worker that persists provider responses and retries transient failures. Do not set a reminder to Delivered based only on browser permission; record the push provider response. Until that infrastructure is installed, the UI only offers the in-app delivery channel and labels browser push as unavailable.
+
+The current data store is `apps/api/data/local.json` (or the `DATA_FILE` override). The `reminders` and `notifications` arrays are added lazily by normalization; existing lead, task, event, and opportunity records are retained. For multi-instance production, replace the single-process JSON store and interval scheduler with a transactional database and durable queue/lease mechanism before running multiple API workers.

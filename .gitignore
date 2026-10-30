@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+apps/api/data/*.json
+playwright-report/
+test-results/
+.tmp/
+.codex-test-tmp/
+.vitest-tmp/
+work/
