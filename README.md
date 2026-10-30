@@ -1,5 +1,7 @@
 # CGBS Sales Command Center
 
+CGBS CRM for sales team.
+
 A responsive sales CRM workspace based on the supplied screenshot. This build provides a local demo with a React + Vite frontend, Express REST API, and fictional JSON records.
 
 ## Local demo features
@@ -48,4 +50,3 @@ The initial migration is supabase/migrations/202610230001_initial_schema.sql. Th
 - `packages/shared`: shared schemas, calculations, safe URL handling, and CSV injection protection.
 - `supabase/migrations`: PostgreSQL schema and row-level policies.
 - `docs`: API reference, architecture, schema, deployment and troubleshooting details.
-
