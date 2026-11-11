@@ -39,7 +39,7 @@ export function DashboardPage() {
     } catch (error) { toast(error instanceof Error ? error.message : 'Could not complete follow-up.', 'error'); }
   };
   return <div className="dashboard-page">
-    <section className="welcome-row"><div><span className="eyebrow">Your sales activity at a glance</span><h1>{greeting}, Rahul <span className="sparkle">✳</span></h1><p>Here’s today’s work and the next steps for your pipeline.</p></div><div className="welcome-actions"><span className="welcome-date">{format(now, 'EEEE, d MMMM')}</span><Link className="button button-dark" to="/leads?add=1">＋ Add lead</Link></div></section>
+    <section className="welcome-row"><div><span className="eyebrow">Your sales activity at a glance</span><h1>{greeting}, user <span className="sparkle">✳</span></h1><p>Here’s today’s work and the next steps for your pipeline.</p></div><div className="welcome-actions"><span className="welcome-date">{format(now, 'EEEE, d MMMM')}</span><Link className="button button-dark" to="/leads?add=1">＋ Add lead</Link></div></section>
     <section className="metric-grid">
       <MetricCard label="Total leads" value={String(m.totalLeads)} note={m.newToday + ' added today'} icon={UsersRound} lime />
       <MetricCard label="Calls logged" value={String(m.callsToday)} note={m.callTarget ? m.callsRemaining + ' left to reach target of ' + m.callTarget : 'No active daily call target'} icon={PhoneCall} />
