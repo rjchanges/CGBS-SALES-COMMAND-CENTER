@@ -2,6 +2,11 @@
   "name": "cgbs-sales-command-center",
   "private": true,
   "version": "0.1.0",
+  "workspaces": [
+    "packages/shared",
+    "apps/api",
+    "apps/web"
+  ],
   "scripts": {
     "dev": "npm --prefix packages/shared run build && concurrently -k -n API,WEB -c blue,green \"npm --prefix apps/api run dev\" \"npm --prefix apps/web run dev\"",
     "build": "npm --prefix packages/shared run build && npm --prefix apps/api run build && npm --prefix apps/web run build",

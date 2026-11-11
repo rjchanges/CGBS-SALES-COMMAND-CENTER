@@ -20,9 +20,6 @@ Use Node.js 20 or newer with npm. From the project root, install packages and st
 
 ```powershell
 npm install
-npm install --prefix packages/shared
-npm install --prefix apps/api
-npm install --prefix apps/web
 Copy-Item .env.example .env
 npm run dev
 ```
