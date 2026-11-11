@@ -269,6 +269,7 @@ export function LeadsPage() {
   const [archived, setArchived] = useState(false);
   const [sort, setSort] = useState('createdAt');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number | 'all'>(10);
   const [searchParams, setSearchParams] = useSearchParams();
   const [editing, setEditing] = useState<Lead | 'new' | null>(null);
   const [details, setDetails] = useState<Lead | null>(null);
@@ -304,9 +305,10 @@ export function LeadsPage() {
     return Date.parse(b.createdAt) - Date.parse(a.createdAt);
   }), [data, archived, query, stage, priority, industry, source, owner, followup, sort, connectionCategory]);
   useEffect(() => { setPage(1); }, [query, stage, priority, industry, source, owner, followup, archived, sort, connectionCategory]);
-  const pageSize = 10;
-  const pageCount = Math.max(1, Math.ceil(leads.length / pageSize));
-  const visibleLeads = leads.slice((page - 1) * pageSize, page * pageSize);
+  const effectivePageSize = pageSize === 'all' ? Math.max(leads.length, 1) : pageSize;
+  const pageCount = Math.max(1, Math.ceil(leads.length / effectivePageSize));
+  const currentPage = Math.min(page, pageCount);
+  const visibleLeads = leads.slice((currentPage - 1) * effectivePageSize, currentPage * effectivePageSize);
   const toggle = (id: string) => setSelected((old) => old.includes(id) ? old.filter((x) => x !== id) : [...old, id]);
   const exportRows = () => {
     const cols = ['id','name','company','companyLogo','companyNetWorth','role','email','phone','industry','source','status','priority','revenue','currency','progression','probability','assignedTo'];
@@ -334,7 +336,7 @@ export function LeadsPage() {
       <div className="table-scroll"><table className="data-table"><thead><tr><th><input type="checkbox" checked={Boolean(visibleLeads.length && visibleLeads.every((item) => selected.includes(item.id)))} onChange={(e) => setSelected(e.target.checked ? [...new Set([...selected, ...visibleLeads.map((x) => x.id)])] : selected.filter((id) => !visibleLeads.some((item) => item.id === id)))} aria-label="Select page leads" /></th><th>Lead</th><th>Company / role</th><th>Stage</th><th>Connection</th><th>Priority</th><th>Progress</th><th>Deal value</th><th>Company net worth</th><th>Next follow-up</th><th></th></tr></thead>
         <tbody>{visibleLeads.map((lead) => <tr key={lead.id} onClick={() => setDetails(lead)} className="lead-row"><td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selected.includes(lead.id)} onChange={() => toggle(lead.id)} aria-label={'Select ' + lead.name} /></td><td><div className="lead-name-cell"><CompanyLogo src={lead.companyLogo} company={lead.company} /><div><strong>{lead.name}</strong><small>{lead.email || lead.phone || 'No contact detail'}</small></div></div></td><td><strong>{lead.company}</strong><small>{lead.role || lead.industry}</small></td><td><span className={statusClass(lead.status)}>{lead.status}</span></td><td><span className="neutral-badge">{categorizeLead(lead, data?.calls || [], data?.tasks || []) || 'No attempts'}</span></td><td><span className={'priority-label priority-' + lead.priority.toLowerCase()}><i className={'priority-dot ' + lead.priority.toLowerCase()} />{lead.priority}</span></td><td><div className="table-progress"><span><i style={{ width: lead.progression + '%' }} /></span><b>{lead.progression}%</b></div></td><td className="amount-cell">{money(lead.revenue, lead.currency)}</td><td className="amount-cell">{money(lead.companyNetWorth || 0, lead.currency)}</td><td className="date-cell">{dateLabel(lead.nextFollowUp)}</td><td onClick={(e) => e.stopPropagation()}><div className="row-actions"><button className="icon-button" title="Edit lead" onClick={() => setEditing(lead)}><Edit3 size={15} /></button><button className="icon-button" title={archived ? 'Restore lead' : 'Archive lead'} onClick={() => void request('/leads/' + lead.id + '/archive', { method: 'POST', body: JSON.stringify({ archived: !archived }) }).then(refresh).then(() => toast(archived ? 'Lead restored.' : 'Lead archived.'))}><Archive size={15} /></button><button className="icon-button danger-hover" title="Delete lead" onClick={() => void deleteLead(lead)}><Trash2 size={15} /></button></div></td></tr>)}
         {!leads.length && <tr><td colSpan={11}><div className="empty-table"><span><UsersRound size={24} /></span><b>{query || stage || priority || industry || source || owner || followup ? 'No leads match these filters' : 'Your lead list is ready'}</b><small>Add a lead or import a spreadsheet to get started.</small><Button variant="primary" onClick={() => setEditing('new')}><Plus size={16} /> Add your first lead</Button></div></td></tr>}</tbody></table></div>
-      <div className="table-footer"><span>Showing <b>{visibleLeads.length}</b> of {leads.length} matching leads</span><span>Page {page} of {pageCount} <button disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>←</button><button disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>→</button></span></div>
+      <div className="table-footer"><span>Showing <b>{visibleLeads.length}</b> of {leads.length} matching leads</span><span>Rows per page <select aria-label="Rows per page" value={pageSize} onChange={(event) => { setPageSize(event.target.value === 'all' ? 'all' : Number(event.target.value)); setPage(1); }}><option value={10}>10</option><option value={50}>50</option><option value={100}>100</option><option value="all">All</option></select> Page {currentPage} of {pageCount} <button disabled={currentPage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>←</button><button disabled={currentPage >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>→</button></span></div>
     </Card>
     {editing && <LeadEditor lead={editing === 'new' ? undefined : editing} onClose={() => setEditing(null)} onSaved={refresh} />}
     {details && <LeadDetails lead={details} onClose={() => setDetails(null)} onEdit={() => { setEditing(details); setDetails(null); }} />}
