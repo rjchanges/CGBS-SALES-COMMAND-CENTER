@@ -20,10 +20,10 @@ function CardTitle({ title, subtitle, action }: { title: string; subtitle?: stri
 function Empty({ message }: { message: string }) { return <div className="empty-chart"><span>◌</span><p>{message}</p></div>; }
 
 export function DashboardPage() {
-  const { data, refresh, toast } = useApp();
+  const { data, user, refresh, toast } = useApp();
   const [showGuide, setShowGuide] = useState(() => localStorage.getItem('cgbs_home_guide_dismissed') !== 'true');
   const [range, setRange] = useState(7);
-  if (!data) return null;
+  if (!data) return <div className="dashboard-page"><section className="welcome-row"><div><span className="eyebrow">Your account is signed in</span><h1>Welcome, {user?.name || 'Sales Executive'}</h1><p>Your CRM Home Page will load when the workspace data service is available.</p></div></section></div>;
   const m = data.metrics;
   const now = new Date();
   const hour = now.getHours();
