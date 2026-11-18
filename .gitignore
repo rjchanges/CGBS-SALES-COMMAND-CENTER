@@ -10,3 +10,6 @@ test-results/
 .codex-test-tmp/
 .vitest-tmp/
 work/
+
+# Local Supabase CLI metadata
+supabase/.temp/

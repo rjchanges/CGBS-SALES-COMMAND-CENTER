@@ -101,7 +101,7 @@ export function OpportunitiesPage() {
       })}{!opps.length && <tr><td colSpan={12}><div className="empty-table"><span><TrendingUp size={24} /></span><b>No opportunities yet</b><small>Create your first opportunity to track pipeline value.</small></div></td></tr>}</tbody></table></div>}
     </Card>
     <div className="note-panel"><Trophy size={17} /><span>Open amounts are projections. Closed-won revenue only includes deals in the Closed Won stage.</span><ArrowUpRight size={15} /></div>
-    {editing && <OpportunityEditor opportunity={editing === 'new' ? undefined : editing} onClose={() => setEditing(null)} onSaved={refresh} />}
+    {editing && <OpportunityEditor opportunity={editing === 'new' ? undefined : editing} onClose={() => setEditing(null)} onSaved={async () => { await refresh(); }} />}
   </div>;
 }
 

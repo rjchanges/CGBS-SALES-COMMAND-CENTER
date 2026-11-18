@@ -8,7 +8,7 @@ import {
   leadSchema, leadStatuses, safeWebsiteUrl,
   type CGBSState, type FollowUpTask, type Lead, type LeadInput, type LeadStatus, type Opportunity,
 } from '../../../packages/shared/dist/index.js';
-import { requireDemoSession, type AuthedRequest } from './auth.js';
+import { createSupabaseClient, requireAuth, requireDemoSession, type AuthedRequest } from './auth.js';
 import { importLeadBatch } from './leadImportService.js';
 import { CallServiceError, recordCall, recordVoiceCallOutcome } from './callService.js';
 import { FollowUpSalesError, saveLeadSalesDetails, updateFollowUpSalesDetails } from './followUpSalesService.js';
@@ -22,10 +22,19 @@ import { OpportunityServiceError, reopenOpportunity, transitionOpportunityStage 
 import { exotelConfig, connectTwoNumbers, getExotelCallDetails, sendExotelVerificationSms } from './exotelClient.js';
 import { isE164PhoneNumber } from './phoneNumber.js';
 import { applyVoiceStatus, canViewVoiceCall, callingProfile, prepareVoiceCall, savePendingPhone, statusFromProvider, verifyExotelBasicAuth, verifyPendingPhone, VoiceCallError } from './voiceCallService.js';
+import { applyVoiceWebhook, checkDatabaseHealth, databaseConfigured, dispatchDueRemindersDatabase } from './postgresStore.js';
 
 const app = express();
 const port = Number(process.env.PORT || 4100);
-const demoMode = process.env.DEMO_MODE !== 'false';
+const demoMode = process.env.DEMO_MODE === 'true' && process.env.NODE_ENV !== 'production';
+
+let authMiddleware: ReturnType<typeof requireAuth> | ReturnType<typeof requireDemoSession>;
+if (!demoMode) {
+  const supabase = createSupabaseClient();
+  authMiddleware = requireAuth(supabase);
+} else {
+  authMiddleware = requireDemoSession(demoMode);
+}
 app.use(cors({ origin: process.env.WEB_ORIGIN || 'http://localhost:5173' }));
 app.use(express.json({ limit: '4mb' }));
 app.use(express.urlencoded({ extended: false }));
@@ -38,8 +47,12 @@ api.post('/auth/demo', (_req, res) => {
   if (!demoMode) return res.status(403).json({ error: 'Local demo access is disabled.' });
   res.json({ accessToken: 'demo-session', user: { id: 'demo-admin', name: 'Rahul Raj M', role: 'Admin' }, mode: 'local-demo' });
 });
-api.get('/auth/config', (_req, res) => res.json({ demoMode, authProvider: demoMode ? 'local-demo' : 'unconfigured', emailConfigured: false }));
-api.get('/health', (_req, res) => res.json({ status: 'ok', mode: demoMode ? 'local-demo' : 'production', timestamp: new Date().toISOString() }));
+api.get('/auth/config', (_req, res) => res.json({ demoMode, authProvider: demoMode ? 'local-demo' : 'supabase', supabaseUrl: demoMode ? null : process.env.SUPABASE_URL, emailConfigured: !demoMode }));
+api.get('/health', async (_req, res) => {
+  if (demoMode) return res.json({ status: 'ok', mode: 'local-demo', storage: { configured: true, connected: true, storage: 'local-json' }, timestamp: new Date().toISOString() });
+  const storage = await checkDatabaseHealth();
+  res.status(storage.connected ? 200 : 503).json({ status: storage.connected ? 'ok' : 'degraded', mode: 'production', storage, timestamp: new Date().toISOString() });
+});
 
 app.post('/api/exotel/callback', async (req, res) => {
   const config = exotelConfig(process.env);
@@ -52,6 +65,10 @@ app.post('/api/exotel/callback', async (req, res) => {
   if (!sid && !customField) return res.status(400).json({ error: 'Callback is missing the Exotel call identifier.' });
   const status = eventType === 'answered' ? 'Connecting to Client' : statusFromProvider(body.Status || body.status, body.Leg1Status, body.Leg2Status, Number(body.ConversationDuration || body.Duration || body.duration || 0) || null);
   if (!status) return res.status(200).json({ accepted: true, ignored: true });
+  if (!demoMode) {
+    const updated = await applyVoiceWebhook({ providerCallId: sid, customCallId: customField, eventId, status, startedAt: providerDate(body.StartTime || body.start_time), endedAt: providerDate(body.EndTime || body.end_time), durationSeconds: Number(body.ConversationDuration || body.Duration || body.duration || 0) || null });
+    return res.status(200).json({ accepted: true, updated });
+  }
   const { result } = await updateStore((state) => {
     const call = state.voiceCalls.find((item) => (sid && item.providerCallId === sid) || (customField && item.id === customField));
     if (!call) return false;
@@ -61,7 +78,8 @@ app.post('/api/exotel/callback', async (req, res) => {
   });
   res.status(200).json({ accepted: true, updated: result });
 });
-api.use(requireDemoSession(demoMode));
+api.use(authMiddleware);
+api.get('/auth/me', (req: AuthedRequest, res) => res.json({ user: req.user }));
 
 function activity(state: CGBSState, leadId: string, type: 'Call' | 'Stage change' | 'Follow-up' | 'Note' | 'Opportunity' | 'Lead update', title: string, detail: string, createdBy = 'Rahul Raj M') {
   state.activities.unshift({ id: randomUUID(), leadId, type, title, detail, createdAt: new Date().toISOString(), createdBy: createdBy });
@@ -87,7 +105,7 @@ api.get('/bootstrap', async (req: AuthedRequest, res) => {
   const data = await readStore();
   const actor = req.user!;
   const visibleTargets = data.targets.filter((target) => canAccessTarget(target, actor));
-  res.json({ user: actor, mode: 'local-demo', ...data, targets: visibleTargets, calendarEvents: [], reminders: listReminders(data, actor), notifications: data.notifications.filter((item) => item.userId === actor.id).slice(0, 100), metrics: calculateMetrics(data), targetPerformance: calculateTargetAchievements({ ...data, targets: visibleTargets }) });
+  res.json({ user: actor, mode: demoMode ? 'local-demo' : 'local-json-pending-database', ...data, targets: visibleTargets, calendarEvents: [], reminders: listReminders(data, actor), notifications: data.notifications.filter((item) => item.userId === actor.id).slice(0, 100), metrics: calculateMetrics(data), targetPerformance: calculateTargetAchievements({ ...data, targets: visibleTargets }) });
 });
 
 api.get('/leads', async (req, res) => {
@@ -503,11 +521,31 @@ api.get('/reports/data', async (req: AuthedRequest, res) => {
 api.get('/reports/summary', async (_req, res) => res.json(calculateMetrics(await readStore())));
 app.use('/api', api);
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
-  console.error(error);
+  const databaseCode = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code?: unknown }).code || '') : '';
+  if (!demoMode) {
+    if (!databaseConfigured()) return res.status(503).json({ error: 'PostgreSQL storage is not configured. Set DATABASE_URL on the API server.' });
+    if (databaseCode === '42P01' || databaseCode === '42703') return res.status(503).json({ error: 'The PostgreSQL CRM schema is incomplete. Apply the reviewed storage migration and check /api/health.' });
+    if (databaseCode === '23505') return res.status(409).json({ error: 'This change conflicts with an existing CRM record.' });
+    console.error('CRM PostgreSQL request failed:', error instanceof Error ? error.message : 'unknown database error');
+    return res.status(503).json({ error: 'The CRM database request failed. Check /api/health and the API logs.' });
+  }
+  console.error(error instanceof Error ? error.message : error);
   res.status(500).json({ error: 'Unexpected server error. Check API logs for details.' });
 });
-app.listen(port, () => { console.log('CGBS API listening on http://localhost:' + port + ' (' + (demoMode ? 'local demo mode' : 'production auth required') + ')'); void deliverReminders(); setInterval(() => void deliverReminders(), 15_000); });
-async function deliverReminders() { try { const state = await readStore(); const due = state.reminders.some((item) => item.enabled && item.status === 'Pending' && Date.parse(item.sendAt) <= Date.now()); if (due) await updateStore((next) => dispatchDueReminders(next)); } catch (error) { console.error('Reminder scheduler error', error); } }
+app.listen(port, () => {
+  console.log('CGBS API listening on http://localhost:' + port + ' (' + (demoMode ? 'local demo mode' : 'Supabase-authenticated PostgreSQL mode') + ')');
+  if (demoMode || databaseConfigured()) { void deliverReminders(); setInterval(() => void deliverReminders(), 15_000); }
+  else console.warn('PostgreSQL storage is not configured. Set DATABASE_URL; CRM requests will fail closed.');
+});
+async function deliverReminders() {
+  try {
+    if (demoMode) {
+      const state = await readStore();
+      const due = state.reminders.some((item) => item.enabled && item.status === 'Pending' && Date.parse(item.sendAt) <= Date.now());
+      if (due) await updateStore((next) => dispatchDueReminders(next));
+    } else await dispatchDueRemindersDatabase();
+  } catch (error) { console.error('Reminder scheduler error', error instanceof Error ? error.message : 'database operation failed'); }
+}
 
 function localOutreach(input: Pick<LeadInput, 'name' | 'company' | 'role' | 'industry' | 'notes'>) {
   const detail = input.notes ? ' I noted: “' + input.notes.slice(0, 180) + '”' : '';

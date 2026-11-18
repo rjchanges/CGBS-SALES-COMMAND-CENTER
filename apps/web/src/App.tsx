@@ -1,8 +1,8 @@
-
 import { lazy, Suspense } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppProvider, useApp } from './context';
 import { Shell } from './layout';
+import { ForgotPasswordPage, ResetPasswordPage, SignInPage, SignUpPage } from './pages/auth';
 import './styles.css';
 
 const DashboardPage = lazy(() => import('./pages/dashboard').then((page) => ({ default: page.DashboardPage })));
@@ -16,11 +16,28 @@ const TemplatesPage = lazy(() => import('./pages/settings').then((page) => ({ de
 const SettingsPage = lazy(() => import('./pages/settings').then((page) => ({ default: page.SettingsPage })));
 const NotificationsPage = lazy(() => import('./pages/settings').then((page) => ({ default: page.NotificationsPage })));
 
+function WorkspaceRoutes() {
+  return <Suspense fallback={<div className="loading-screen"><span className="spinner" />Opening workspace</div>}>
+    <Routes><Route element={<Shell />}>
+      <Route index element={<DashboardPage />} /><Route path="leads" element={<LeadsPage />} />
+      <Route path="calling" element={<CallingPage />} /><Route path="follow-ups" element={<FollowUpsPage />} />
+      <Route path="calendar" element={<CalendarPage />} /><Route path="opportunities" element={<OpportunitiesPage />} />
+      <Route path="reports" element={<ReportsPage />} /><Route path="templates" element={<TemplatesPage />} />
+      <Route path="notifications" element={<NotificationsPage />} /><Route path="settings" element={<SettingsPage />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Route></Routes>
+  </Suspense>;
+}
 function Gate() {
-  const { data, loading, error, loginDemo } = useApp();
+  const { authenticated, loading, error } = useApp();
   if (loading) return <div className="loading-screen"><span className="spinner" />Loading your workspace</div>;
-  if (!data) return <main className="login-screen"><section className="login-card"><img className="login-brand-logo" src="/assets/canopus-global-business-services-g.png" alt="Canopus Global Business Services G logo" /><span className="eyebrow">CGBS SALES</span><h1>Good work starts with a clear next step.</h1><p>Keep your leads, calls and pipeline moving from one calm workspace.</p>{error && <div className="inline-error">{error}</div>}<button className="button button-primary button-wide" onClick={() => void loginDemo()}>Continue to demo workspace <span>→</span></button><small>Local fictional demo · no password required</small></section><div className="login-side"><div className="login-grid"></div><div className="login-quote"><span>“</span><h2>Make every follow-up count.</h2><p>A thoughtful sales day begins with knowing who needs you next.</p></div></div></main>;
-  return <Suspense fallback={<div className="loading-screen"><span className="spinner" />Opening workspace</div>}><Routes><Route element={<Shell />}><Route index element={<DashboardPage />} /><Route path="leads" element={<LeadsPage />} /><Route path="calling" element={<CallingPage />} /><Route path="follow-ups" element={<FollowUpsPage />} /><Route path="calendar" element={<CalendarPage />} /><Route path="opportunities" element={<OpportunitiesPage />} /><Route path="reports" element={<ReportsPage />} /><Route path="templates" element={<TemplatesPage />} /><Route path="notifications" element={<NotificationsPage />} /><Route path="settings" element={<SettingsPage />} /><Route path="*" element={<Navigate to="/" replace />} /></Route></Routes></Suspense>;
+  return <Routes>
+    <Route path="/login" element={authenticated ? <Navigate to="/" replace /> : <SignInPage initialError={error} />} />
+    <Route path="/signup" element={authenticated ? <Navigate to="/" replace /> : <SignUpPage />} />
+    <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+    <Route path="/reset-password" element={<ResetPasswordPage />} />
+    <Route path="*" element={authenticated ? <WorkspaceRoutes /> : <Navigate to="/login" replace />} />
+  </Routes>;
 }
 export default function App() {
   return <AppProvider><BrowserRouter><Gate /></BrowserRouter></AppProvider>;
