@@ -8,25 +8,38 @@ let pool: Pool | undefined;
 
 export function setPoolForTests(value: Pool | undefined): void { pool = value; }
 
-function databaseUrl(): string {
+function databaseConnectionString(): string {
   const value = process.env.DATABASE_URL?.trim();
   if (!value) throw new Error('PostgreSQL storage is not configured. Set DATABASE_URL on the API server.');
   if (/[<>]|your-|example\.test/i.test(value)) throw new Error('Replace the DATABASE_URL placeholder with the PostgreSQL URI from Supabase Connect.');
   let parsed: URL;
   try { parsed = new URL(value); } catch { throw new Error('DATABASE_URL is invalid. Use the Supabase Connect PostgreSQL URI.'); }
   if (!['postgres:', 'postgresql:'].includes(parsed.protocol)) throw new Error('DATABASE_URL must use the postgres:// or postgresql:// scheme.');
-  if (!['require', 'verify-ca', 'verify-full'].includes(parsed.searchParams.get('sslmode') || '')) {
-    throw new Error('DATABASE_URL must require TLS (add sslmode=require or sslmode=verify-full).');
+  if (!parsed.hostname || !parsed.pathname || parsed.pathname === '/') throw new Error('DATABASE_URL must include the PostgreSQL host and database name.');
+  const sslMode = parsed.searchParams.get('sslmode');
+  if (sslMode && !['require', 'verify-ca', 'verify-full'].includes(sslMode)) {
+    throw new Error('DATABASE_URL requests a non-TLS connection. PostgreSQL connections must use TLS.');
   }
-  return value;
+  // TLS is enforced by the Pool's ssl option below. Remove sslmode and
+  // libpq SSL options from the URI because node-postgres may let these
+  // override the explicit TLS settings passed to Pool.
+  for (const key of ['sslmode', 'ssl', 'sslrootcert', 'sslcert', 'sslkey']) parsed.searchParams.delete(key);
+  return parsed.toString();
+}
+
+export function databaseConfiguration(): { configured: boolean; error?: string } {
+  try { databaseConnectionString(); return { configured: true }; }
+  catch (error) {
+    return { configured: false, error: error instanceof Error ? error.message : 'DATABASE_URL is invalid.' };
+  }
 }
 
 function getPool(): Pool {
   if (!pool) {
     pool = new Pool({
-      connectionString: databaseUrl(),
+      connectionString: databaseConnectionString(),
       ssl: { rejectUnauthorized: true },
-      max: Math.max(1, Math.min(20, Number(process.env.DATABASE_POOL_MAX || 5))),
+      max: (() => { const max = Number(process.env.DATABASE_POOL_MAX || 5); return Number.isInteger(max) && max > 0 ? Math.min(20, max) : 5; })(),
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 8_000,
       allowExitOnIdle: process.env.NODE_ENV === 'test',
@@ -37,10 +50,21 @@ function getPool(): Pool {
 }
 
 export function databaseConfigured(): boolean {
-  try { databaseUrl(); return true; } catch { return false; }
+  return databaseConfiguration().configured;
+}
+
+export function databaseConnectionErrorMessage(code: string): string | undefined {
+  if (code === '28P01' || code === '28000') return 'PostgreSQL rejected the configured username or password. Check DATABASE_URL in the API service settings.';
+  if (code === '3D000') return 'PostgreSQL could not find the configured database. Check the database name in DATABASE_URL.';
+  if (['ENOTFOUND', 'EAI_AGAIN'].includes(code)) return 'The PostgreSQL host in DATABASE_URL could not be resolved. Check the host and the Supabase connection mode.';
+  if (['ECONNREFUSED', 'ETIMEDOUT', 'ECONNRESET'].includes(code)) return 'The PostgreSQL host rejected or timed out the connection. Check network access and the Supabase connection mode.';
+  if (['CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN'].includes(code)) return 'The PostgreSQL TLS certificate could not be verified. Check the Supabase connection URI and server certificate chain.';
+  return undefined;
 }
 
 export async function checkDatabaseHealth(): Promise<{ configured: boolean; connected: boolean; storage: 'postgresql'; error?: string }> {
+  const configuration = databaseConfiguration();
+  if (!configuration.configured) return { configured: false, connected: false, storage: 'postgresql', error: configuration.error };
   try {
     const client = await getPool().connect();
     try {
@@ -78,8 +102,10 @@ export async function checkDatabaseHealth(): Promise<{ configured: boolean; conn
         : { configured: true, connected: true, storage: 'postgresql' };
     } finally { client.release(); }
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown database connection error.';
-    return { configured: databaseConfigured(), connected: false, storage: 'postgresql', error: message.includes('DATABASE_URL') ? message : 'Could not connect to the PostgreSQL database. Check DATABASE_URL, TLS, and network access.' };
+    const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code?: unknown }).code || '') : '';
+    const connectionError = databaseConnectionErrorMessage(code);
+    if (connectionError) return { configured: true, connected: false, storage: 'postgresql', error: connectionError };
+    return { configured: true, connected: false, storage: 'postgresql', error: 'Could not connect to PostgreSQL. Check the API logs for the error code and verify the Supabase connection settings.' };
   }
 }
 

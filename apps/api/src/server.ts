@@ -22,7 +22,7 @@ import { OpportunityServiceError, reopenOpportunity, transitionOpportunityStage 
 import { exotelConfig, connectTwoNumbers, getExotelCallDetails, sendExotelVerificationSms } from './exotelClient.js';
 import { isE164PhoneNumber } from './phoneNumber.js';
 import { applyVoiceStatus, canViewVoiceCall, callingProfile, prepareVoiceCall, savePendingPhone, statusFromProvider, verifyExotelBasicAuth, verifyPendingPhone, VoiceCallError } from './voiceCallService.js';
-import { applyVoiceWebhook, checkDatabaseHealth, databaseConfigured, dispatchDueRemindersDatabase } from './postgresStore.js';
+import { applyVoiceWebhook, checkDatabaseHealth, databaseConfiguration, databaseConnectionErrorMessage, dispatchDueRemindersDatabase, closeDatabasePool } from './postgresStore.js';
 
 const app = express();
 const port = Number(process.env.PORT || 4100);
@@ -105,7 +105,7 @@ api.get('/bootstrap', async (req: AuthedRequest, res) => {
   const data = await readStore();
   const actor = req.user!;
   const visibleTargets = data.targets.filter((target) => canAccessTarget(target, actor));
-  res.json({ user: actor, mode: demoMode ? 'local-demo' : 'local-json-pending-database', ...data, targets: visibleTargets, calendarEvents: [], reminders: listReminders(data, actor), notifications: data.notifications.filter((item) => item.userId === actor.id).slice(0, 100), metrics: calculateMetrics(data), targetPerformance: calculateTargetAchievements({ ...data, targets: visibleTargets }) });
+  res.json({ user: actor, mode: demoMode ? 'local-demo' : 'postgresql', ...data, targets: visibleTargets, calendarEvents: [], reminders: listReminders(data, actor), notifications: data.notifications.filter((item) => item.userId === actor.id).slice(0, 100), metrics: calculateMetrics(data), targetPerformance: calculateTargetAchievements({ ...data, targets: visibleTargets }) });
 });
 
 api.get('/leads', async (req, res) => {
@@ -516,27 +516,45 @@ api.get('/reports/data', async (req: AuthedRequest, res) => {
   const actor = req.user!;
   const scoped = scopeReportRecords(await readStore(), actor);
   const targets = scoped.targets.filter((target) => canAccessTarget(target, actor));
-  res.json({ user: actor, mode: 'local-demo', ...scoped, metrics: calculateMetrics(scoped), targetPerformance: calculateTargetAchievements({ ...scoped, targets }) });
+  res.json({ user: actor, mode: demoMode ? 'local-demo' : 'postgresql', ...scoped, metrics: calculateMetrics(scoped), targetPerformance: calculateTargetAchievements({ ...scoped, targets }) });
 });
 api.get('/reports/summary', async (_req, res) => res.json(calculateMetrics(await readStore())));
 app.use('/api', api);
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const databaseCode = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code?: unknown }).code || '') : '';
   if (!demoMode) {
-    if (!databaseConfigured()) return res.status(503).json({ error: 'PostgreSQL storage is not configured. Set DATABASE_URL on the API server.' });
+    const configuration = databaseConfiguration();
+    if (!configuration.configured) return res.status(503).json({ error: configuration.error || 'PostgreSQL database configuration is invalid.' });
     if (databaseCode === '42P01' || databaseCode === '42703') return res.status(503).json({ error: 'The PostgreSQL CRM schema is incomplete. Apply the reviewed storage migration and check /api/health.' });
     if (databaseCode === '23505') return res.status(409).json({ error: 'This change conflicts with an existing CRM record.' });
+    const connectionError = databaseConnectionErrorMessage(databaseCode);
+    if (connectionError) return res.status(503).json({ error: connectionError });
     console.error('CRM PostgreSQL request failed:', error instanceof Error ? error.message : 'unknown database error');
     return res.status(503).json({ error: 'The CRM database request failed. Check /api/health and the API logs.' });
   }
   console.error(error instanceof Error ? error.message : error);
   res.status(500).json({ error: 'Unexpected server error. Check API logs for details.' });
 });
-app.listen(port, () => {
+const httpServer = app.listen(port, () => {
   console.log('CGBS API listening on http://localhost:' + port + ' (' + (demoMode ? 'local demo mode' : 'Supabase-authenticated PostgreSQL mode') + ')');
-  if (demoMode || databaseConfigured()) { void deliverReminders(); setInterval(() => void deliverReminders(), 15_000); }
-  else console.warn('PostgreSQL storage is not configured. Set DATABASE_URL; CRM requests will fail closed.');
+  if (demoMode) { void deliverReminders(); setInterval(() => void deliverReminders(), 15_000); return; }
+  const configuration = databaseConfiguration();
+  if (!configuration.configured) console.error('CRM PostgreSQL configuration error:', configuration.error);
+  else {
+    void checkDatabaseHealth().then((health) => {
+      if (health.connected) console.info('CRM PostgreSQL readiness check passed.');
+      else console.error('CRM PostgreSQL readiness check failed:', health.error || 'database unavailable');
+    });
+    void deliverReminders(); setInterval(() => void deliverReminders(), 15_000);
+  }
 });
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.once(signal, () => {
+    console.info(`Received ${signal}; closing the API and PostgreSQL pool.`);
+    httpServer.close(() => { void closeDatabasePool().finally(() => process.exit(0)); });
+    setTimeout(() => process.exit(1), 10_000).unref();
+  });
+}
 async function deliverReminders() {
   try {
     if (demoMode) {

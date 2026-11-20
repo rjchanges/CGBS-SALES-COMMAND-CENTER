@@ -62,7 +62,7 @@ export function Shell() {
     <div className="main-area">
       <header className="topbar"><div className="topbar-spacer"></div><div className="date-pill"><CalendarDays size={16} />{date}</div><button className="button button-dark add-lead-top" onClick={fireAdd} disabled={!data}><span>＋</span> Add lead</button><div className="topbar-avatar-wrap"><button className="avatar avatar-dark" onClick={() => setUserMenu(!userMenu)} aria-label="Open profile menu">{(data?.user.name || user?.name || 'U').split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase()}<ChevronDown size={13} /></button>{userMenu && <div className="user-menu"><strong>{data?.user.name || user?.name}</strong><span>{data?.user.role || user?.role}</span><button onClick={logout}><LogOut size={15} /> Sign out</button></div>}</div></header>
       <main className="content"><div className="mobile-page-title">{titles[location.pathname] || 'Workspace'}</div>{!data && error && <div className="inline-error" role="status">Signed in as {user?.email || user?.name}. {error}</div>}<Outlet /></main>
-      <footer className="app-footer"><span>© 2026 CGBS Sales Command Center</span><span><i className="status-dot" />{data?.mode === 'local-demo' ? 'Local demo · Fictional sample records' : 'Supabase Auth · CRM database adapter still required'}</span></footer>
+      <footer className="app-footer"><span>© 2026 CGBS Sales Command Center</span><span><i className="status-dot" />{data?.mode === 'local-demo' ? 'Local demo · Fictional sample records' : 'Supabase Auth · PostgreSQL CRM workspace'}</span></footer>
     </div>
   </div>;
 }

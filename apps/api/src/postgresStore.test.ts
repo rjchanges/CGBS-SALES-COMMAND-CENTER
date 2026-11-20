@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 import type { Lead } from '../../../packages/shared/dist/index.js';
 import { runAsDatabaseActor } from './databaseContext.js';
-import { checkDatabaseHealth, databaseConfigured, readPostgresStore, setPoolForTests, updatePostgresStore } from './postgresStore.js';
+import { checkDatabaseHealth, databaseConfiguration, databaseConfigured, readPostgresStore, setPoolForTests, updatePostgresStore } from './postgresStore.js';
 
 const originalUrl = process.env.DATABASE_URL;
 
@@ -16,6 +16,7 @@ describe('PostgreSQL storage configuration', () => {
   it('reports missing database configuration without implying storage is healthy', async () => {
     delete process.env.DATABASE_URL;
     expect(databaseConfigured()).toBe(false);
+    expect(databaseConfiguration()).toMatchObject({ configured: false, error: 'PostgreSQL storage is not configured. Set DATABASE_URL on the API server.' });
     await expect(checkDatabaseHealth()).resolves.toMatchObject({
       configured: false,
       connected: false,
@@ -24,18 +25,33 @@ describe('PostgreSQL storage configuration', () => {
     });
   });
 
-  it('requires an encrypted PostgreSQL URI', () => {
+  it('accepts a valid PostgreSQL URI without sslmode because the pool enforces verified TLS', () => {
+    process.env.DATABASE_URL = 'postgresql://user:pass@db.supabase.co:5432/postgres';
+    expect(databaseConfiguration()).toEqual({ configured: true });
+    expect(databaseConfigured()).toBe(true);
+  });
+
+  it('rejects connection strings that explicitly disable TLS', () => {
+    process.env.DATABASE_URL = 'postgresql://user:pass@db.supabase.co:5432/postgres?sslmode=disable';
+    expect(databaseConfiguration()).toMatchObject({ configured: false, error: 'DATABASE_URL requests a non-TLS connection. PostgreSQL connections must use TLS.' });
+  });
+
+  it('reports malformed and placeholder values as invalid instead of missing', () => {
+    process.env.DATABASE_URL = 'postgresql://user:pass@db.supabase.co:5432/postgres?sslmode=require';
+    expect(databaseConfiguration()).toEqual({ configured: true });
+    process.env.DATABASE_URL = 'not-a-postgres-uri';
+    expect(databaseConfiguration()).toMatchObject({ configured: false, error: 'DATABASE_URL is invalid. Use the Supabase Connect PostgreSQL URI.' });
     process.env.DATABASE_URL = 'postgresql://user:pass@db.example.test:5432/postgres';
-    expect(databaseConfigured()).toBe(false);
+    expect(databaseConfiguration()).toMatchObject({ configured: false, error: 'Replace the DATABASE_URL placeholder with the PostgreSQL URI from Supabase Connect.' });
   });
 
   it('requires an authenticated database actor before reading CRM records', async () => {
-    process.env.DATABASE_URL = 'postgresql://user:pass@db.example.test:5432/postgres?sslmode=require';
+    process.env.DATABASE_URL = 'postgresql://user:pass@db.supabase.co:5432/postgres?sslmode=require';
     await expect(readPostgresStore()).rejects.toThrow('Database access requires an authenticated CRM user.');
   });
 
   it('persists lead/company rows inside a transaction scoped to the verified Auth user', async () => {
-    process.env.DATABASE_URL = 'postgresql://user:pass@db.example.test:5432/postgres?sslmode=require';
+    process.env.DATABASE_URL = 'postgresql://user:pass@db.supabase.co:5432/postgres?sslmode=require';
     const actorId = '00000000-0000-4000-8000-000000000001';
     const companyId = '00000000-0000-4000-8000-000000000002';
     const tableRows = new Map<string, Record<string, unknown>[]>([['profiles', [{ id: actorId, full_name: 'Asha Nair', role: 'salesperson', active: true }]]]);
@@ -81,5 +97,16 @@ describe('PostgreSQL storage configuration', () => {
     expect(statements.some((x) => x.sql.includes('request.jwt.claim.sub') && x.values?.[0] === actorId)).toBe(true);
     expect(statements.some((x) => /insert into public\.leads/i.test(x.sql))).toBe(true);
     expect(tableRows.get('companies')?.[0]?.id).toBe(companyId);
+  });
+
+  it('distinguishes rejected database credentials from missing configuration', async () => {
+    process.env.DATABASE_URL = 'postgresql://user:pass@db.supabase.co:5432/postgres?sslmode=require';
+    const fakePool = { connect: async () => { throw Object.assign(new Error('password authentication failed'), { code: '28P01' }); } } as unknown as Pool;
+    setPoolForTests(fakePool);
+    await expect(checkDatabaseHealth()).resolves.toMatchObject({
+      configured: true,
+      connected: false,
+      error: 'PostgreSQL rejected the configured username or password. Check DATABASE_URL in the API service settings.',
+    });
   });
 });

@@ -40,7 +40,7 @@ VITE_API_URL=http://localhost:4100
 VITE_DEMO_MODE=false
 ```
 
-The frontend key and server-side publishable key are the same public key. A secret/service-role key is not needed for Auth or ordinary CRM data requests. `DATABASE_URL` is server-only; never put it in a `VITE_*` variable. Obtain it in Supabase Dashboard → **Connect** → **App Frameworks/Connection string** → **URI**, or choose the Supavisor session pooler if the host cannot connect over IPv6. Replace the password placeholder and keep `sslmode=require` (or `verify-full`). `DATABASE_POOL_MAX` defaults to 5 and can be lowered for small Render instances. The app can still run in local demo mode by setting `DEMO_MODE=true` in root `.env`; production ignores demo mode and never falls back to the JSON file.
+The frontend key and server-side publishable key are the same public key. A secret/service-role key is not needed for Auth or ordinary CRM data requests. `DATABASE_URL` is server-only; never put it in a `VITE_*` variable. Obtain it in Supabase Dashboard → **Connect** → **App Frameworks/Connection string** → **URI**, or choose the Supavisor session pooler if the host cannot connect over IPv6. Replace the password placeholder. The API enforces verified TLS in its PostgreSQL pool, even if the URI omits `sslmode`; any explicit `sslmode` must be `require`, `verify-ca`, or `verify-full`. `DATABASE_POOL_MAX` defaults to 5 and can be lowered for small Render instances. The app can still run in local demo mode by setting `DEMO_MODE=true` in root `.env`; production ignores demo mode and never falls back to the JSON file.
 
 ## Local migration inventory
 
@@ -102,12 +102,14 @@ npm run dev
 
 This starts the web app at `http://localhost:5173` and API at `http://localhost:4100`. Direct signup can be tested after Supabase **Confirm email** is disabled. Set `DATABASE_URL` before using CRM pages. Check `http://localhost:4100/api/health`; it reports if the database connects and whether required tables are missing.
 
-## Deployment variables (when database persistence is completed)
+## Render configuration and storage diagnostics
 
-Backend service: `NODE_ENV=production`, `DEMO_MODE=false`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `WEB_ORIGIN`, `DATABASE_URL`, and optionally `DATABASE_POOL_MAX`.
+Backend web service: set `NODE_ENV=production`, `DEMO_MODE=false`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `WEB_ORIGIN`, `DATABASE_URL`, and optionally `DATABASE_POOL_MAX=5` in the Render service's **Environment** settings. `DATABASE_URL` must be the PostgreSQL URI from Supabase Connect; it is not the Supabase project URL. Never add it as a `VITE_*` variable. The updated API recognizes a valid PostgreSQL URI even when it has no `sslmode` parameter because TLS is enforced in the pool.
 
-Frontend build: `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, `VITE_API_URL=https://cgbs-sales-command-center.onrender.com`.
+For a monorepo Render API service with the repository root as its Root Directory, use build command `npm ci && npm run build` and start command `npm --prefix apps/api start`. The API start script runs the compiled `apps/api/dist/server.js` build. Set `WEB_ORIGIN` to the deployed frontend origin.
 
-The local frontend environment currently uses `VITE_API_URL=http://localhost:4100`. The Render API health check timed out during this task, and no Render project connection or environment manifest is present in the repository, so the live Render environment variables could not be inspected. Set `VITE_API_URL` on the Render frontend build service and `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `WEB_ORIGIN`, and `DEMO_MODE=false` on the Render API service.
+Frontend static site: set build-time `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, and `VITE_API_URL=https://cgbs-sales-command-center.onrender.com`. With the repository root as Root Directory, use build command `npm ci && npm run build` and publish directory `apps/web/dist`.
 
-In Render, add `DATABASE_URL` and `DATABASE_POOL_MAX=5` in the backend service's **Environment** settings. Keep `DATABASE_URL` server-only. Render deployment and live connectivity were not performed in this task; configure `DATABASE_URL`, apply the pending migration after approval, then verify the backend `/api/health` response before using CRM data.
+Check `https://cgbs-sales-command-center.onrender.com/api/health` after redeploying. It distinguishes missing/invalid configuration, TLS/database connection errors, rejected credentials, and an incomplete schema without returning connection details. If the API server has no `DATABASE_URL`, the health response says so; if the URL is malformed, it explains which validation failed. If it connects but required tables or columns are missing, review migration 8 below. In this environment the Render health endpoint timed out and the deployment variables could not be inspected, so production connectivity remains unverified.
+
+The user reports that migrations 1–7 are applied. Migration `202611210001_storage_adapter.sql` is still pending locally and is needed for current CRM fields/tables; preview it using the dry-run steps above, and apply only after separately reviewing and approving the plan. This code change does not apply migrations or alter production data.
