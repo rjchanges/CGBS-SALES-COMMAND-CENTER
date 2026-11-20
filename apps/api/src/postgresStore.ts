@@ -1,9 +1,13 @@
 import { Pool, type PoolClient, type QueryResultRow } from 'pg';
+import { X509Certificate } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import type { CGBSState, Lead, SalesTarget } from '../../../packages/shared/dist/index.js';
 import { currentDatabaseActor } from './databaseContext.js';
 
 type Row = Record<string, any>;
 type SnapshotMeta = { companies: Row[]; profiles: Row[]; companyIdByLeadId: Map<string, string> };
+type DatabaseTlsOptions = { rejectUnauthorized: true; ca?: string };
+export type DatabaseHealth = { configured: boolean; connected: boolean; storage: 'postgresql'; error?: string };
 let pool: Pool | undefined;
 
 export function setPoolForTests(value: Pool | undefined): void { pool = value; }
@@ -34,17 +38,43 @@ export function databaseConfiguration(): { configured: boolean; error?: string }
   }
 }
 
+export function databaseTlsOptions(): DatabaseTlsOptions {
+  const inlineCa = process.env.DATABASE_SSL_CA?.trim();
+  const caFile = process.env.DATABASE_SSL_CA_FILE?.trim();
+  if (inlineCa && caFile) throw Object.assign(new Error('Set only one of DATABASE_SSL_CA or DATABASE_SSL_CA_FILE.'), { code: 'DATABASE_TLS_CA_INVALID' });
+  if (!inlineCa && !caFile) return { rejectUnauthorized: true };
+
+  let pem = inlineCa;
+  if (caFile) {
+    try { pem = readFileSync(caFile, 'utf8').trim(); }
+    catch { throw Object.assign(new Error('Could not read DATABASE_SSL_CA_FILE. Mount the Supabase CA certificate as a server-only secret file and check its path.'), { code: 'DATABASE_TLS_CA_INVALID' }); }
+  }
+  const certificatePattern = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g;
+  const certificates = pem?.match(certificatePattern) || [];
+  const remainder = (pem || '').replace(certificatePattern, '').trim();
+  if (!certificates.length || remainder) throw Object.assign(new Error('DATABASE_SSL_CA must contain only PEM-encoded CA certificate(s) from Supabase Database Settings.'), { code: 'DATABASE_TLS_CA_INVALID' });
+  try {
+    if (certificates.some((certificate) => !new X509Certificate(certificate).ca)) throw new Error('Not a CA certificate.');
+  } catch {
+    throw Object.assign(new Error('DATABASE_SSL_CA is not a valid CA certificate chain. Download the PostgreSQL CA certificate from Supabase Database Settings.'), { code: 'DATABASE_TLS_CA_INVALID' });
+  }
+  return { rejectUnauthorized: true, ca: certificates.join('\n') };
+}
+
 function getPool(): Pool {
   if (!pool) {
     pool = new Pool({
       connectionString: databaseConnectionString(),
-      ssl: { rejectUnauthorized: true },
+      ssl: databaseTlsOptions(),
       max: (() => { const max = Number(process.env.DATABASE_POOL_MAX || 5); return Number.isInteger(max) && max > 0 ? Math.min(20, max) : 5; })(),
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 8_000,
       allowExitOnIdle: process.env.NODE_ENV === 'test',
     });
-    pool.on('error', (error) => console.error('PostgreSQL idle client error:', error.message));
+    pool.on('error', (error) => {
+      const code = String((error as { code?: unknown }).code || 'unknown');
+      console.error('PostgreSQL idle client error:', databaseConnectionErrorMessage(code) || `Database pool error (${code}).`);
+    });
   }
   return pool;
 }
@@ -54,15 +84,17 @@ export function databaseConfigured(): boolean {
 }
 
 export function databaseConnectionErrorMessage(code: string): string | undefined {
+  if (code === 'DATABASE_TLS_CA_INVALID') return 'The configured PostgreSQL CA is missing, unreadable, or invalid. Set DATABASE_SSL_CA or DATABASE_SSL_CA_FILE to the CA certificate downloaded from Supabase Database Settings.';
   if (code === '28P01' || code === '28000') return 'PostgreSQL rejected the configured username or password. Check DATABASE_URL in the API service settings.';
   if (code === '3D000') return 'PostgreSQL could not find the configured database. Check the database name in DATABASE_URL.';
   if (['ENOTFOUND', 'EAI_AGAIN'].includes(code)) return 'The PostgreSQL host in DATABASE_URL could not be resolved. Check the host and the Supabase connection mode.';
   if (['ECONNREFUSED', 'ETIMEDOUT', 'ECONNRESET'].includes(code)) return 'The PostgreSQL host rejected or timed out the connection. Check network access and the Supabase connection mode.';
-  if (['CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN'].includes(code)) return 'The PostgreSQL TLS certificate could not be verified. Check the Supabase connection URI and server certificate chain.';
+  if (['SELF_SIGNED_CERT_IN_CHAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'].includes(code)) return 'The PostgreSQL endpoint certificate is not trusted by this Node runtime. Add the project CA downloaded from Supabase Database Settings as DATABASE_SSL_CA or DATABASE_SSL_CA_FILE; certificate verification remains enabled.';
+  if (['CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID'].includes(code)) return 'The PostgreSQL TLS certificate is expired or does not match the configured host. Confirm the exact endpoint copied from Supabase Connect and the current project CA.';
   return undefined;
 }
 
-export async function checkDatabaseHealth(): Promise<{ configured: boolean; connected: boolean; storage: 'postgresql'; error?: string }> {
+export async function checkDatabaseHealth(): Promise<DatabaseHealth> {
   const configuration = databaseConfiguration();
   if (!configuration.configured) return { configured: false, connected: false, storage: 'postgresql', error: configuration.error };
   try {

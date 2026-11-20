@@ -23,8 +23,12 @@ import { exotelConfig, connectTwoNumbers, getExotelCallDetails, sendExotelVerifi
 import { isE164PhoneNumber } from './phoneNumber.js';
 import { applyVoiceStatus, canViewVoiceCall, callingProfile, prepareVoiceCall, savePendingPhone, statusFromProvider, verifyExotelBasicAuth, verifyPendingPhone, VoiceCallError } from './voiceCallService.js';
 import { applyVoiceWebhook, checkDatabaseHealth, databaseConfiguration, databaseConnectionErrorMessage, dispatchDueRemindersDatabase, closeDatabasePool } from './postgresStore.js';
+import { createHealthHandler } from './healthRoute.js';
+import { configureRenderProxyTrust } from './proxyTrust.js';
+import { createRetryingScheduler } from './reminderScheduler.js';
 
 const app = express();
+configureRenderProxyTrust(app);
 const port = Number(process.env.PORT || 4100);
 const demoMode = process.env.DEMO_MODE === 'true' && process.env.NODE_ENV !== 'production';
 
@@ -48,11 +52,7 @@ api.post('/auth/demo', (_req, res) => {
   res.json({ accessToken: 'demo-session', user: { id: 'demo-admin', name: 'Rahul Raj M', role: 'Admin' }, mode: 'local-demo' });
 });
 api.get('/auth/config', (_req, res) => res.json({ demoMode, authProvider: demoMode ? 'local-demo' : 'supabase', supabaseUrl: demoMode ? null : process.env.SUPABASE_URL, emailConfigured: !demoMode }));
-api.get('/health', async (_req, res) => {
-  if (demoMode) return res.json({ status: 'ok', mode: 'local-demo', storage: { configured: true, connected: true, storage: 'local-json' }, timestamp: new Date().toISOString() });
-  const storage = await checkDatabaseHealth();
-  res.status(storage.connected ? 200 : 503).json({ status: storage.connected ? 'ok' : 'degraded', mode: 'production', storage, timestamp: new Date().toISOString() });
-});
+api.get('/health', createHealthHandler(demoMode));
 
 app.post('/api/exotel/callback', async (req, res) => {
   const config = exotelConfig(process.env);
@@ -535,9 +535,21 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   console.error(error instanceof Error ? error.message : error);
   res.status(500).json({ error: 'Unexpected server error. Check API logs for details.' });
 });
+
+const reminderSchedulerTick = createRetryingScheduler(async () => {
+  if (!demoMode) return dispatchDueRemindersDatabase();
+  const state = await readStore();
+  const due = state.reminders.some((item) => item.enabled && item.status === 'Pending' && Date.parse(item.sendAt) <= Date.now());
+  if (due) await updateStore((next) => dispatchDueReminders(next));
+}, (error) => {
+  const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code?: unknown }).code || '') : '';
+  return databaseConnectionErrorMessage(code) || (code ? `Reminder storage operation failed (database error ${code}). Check /api/health.` : 'Reminder storage operation failed. Check /api/health and the API logs.');
+});
+let reminderInterval: NodeJS.Timeout | undefined;
+
 const httpServer = app.listen(port, () => {
   console.log('CGBS API listening on http://localhost:' + port + ' (' + (demoMode ? 'local demo mode' : 'Supabase-authenticated PostgreSQL mode') + ')');
-  if (demoMode) { void deliverReminders(); setInterval(() => void deliverReminders(), 15_000); return; }
+  if (demoMode) { void reminderSchedulerTick(); reminderInterval = setInterval(() => void reminderSchedulerTick(), 15_000); return; }
   const configuration = databaseConfiguration();
   if (!configuration.configured) console.error('CRM PostgreSQL configuration error:', configuration.error);
   else {
@@ -545,24 +557,16 @@ const httpServer = app.listen(port, () => {
       if (health.connected) console.info('CRM PostgreSQL readiness check passed.');
       else console.error('CRM PostgreSQL readiness check failed:', health.error || 'database unavailable');
     });
-    void deliverReminders(); setInterval(() => void deliverReminders(), 15_000);
+    void reminderSchedulerTick(); reminderInterval = setInterval(() => void reminderSchedulerTick(), 15_000);
   }
 });
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.once(signal, () => {
     console.info(`Received ${signal}; closing the API and PostgreSQL pool.`);
+    if (reminderInterval) clearInterval(reminderInterval);
     httpServer.close(() => { void closeDatabasePool().finally(() => process.exit(0)); });
     setTimeout(() => process.exit(1), 10_000).unref();
   });
-}
-async function deliverReminders() {
-  try {
-    if (demoMode) {
-      const state = await readStore();
-      const due = state.reminders.some((item) => item.enabled && item.status === 'Pending' && Date.parse(item.sendAt) <= Date.now());
-      if (due) await updateStore((next) => dispatchDueReminders(next));
-    } else await dispatchDueRemindersDatabase();
-  } catch (error) { console.error('Reminder scheduler error', error instanceof Error ? error.message : 'database operation failed'); }
 }
 
 function localOutreach(input: Pick<LeadInput, 'name' | 'company' | 'role' | 'industry' | 'notes'>) {

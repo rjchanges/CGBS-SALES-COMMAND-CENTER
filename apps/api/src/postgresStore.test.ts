@@ -1,15 +1,26 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
+import { rootCertificates } from 'node:tls';
+import { X509Certificate } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { unlinkSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { Lead } from '../../../packages/shared/dist/index.js';
 import { runAsDatabaseActor } from './databaseContext.js';
-import { checkDatabaseHealth, databaseConfiguration, databaseConfigured, readPostgresStore, setPoolForTests, updatePostgresStore } from './postgresStore.js';
+import { checkDatabaseHealth, databaseConfiguration, databaseConfigured, databaseConnectionErrorMessage, databaseTlsOptions, readPostgresStore, setPoolForTests, updatePostgresStore } from './postgresStore.js';
 
 const originalUrl = process.env.DATABASE_URL;
+const originalCa = process.env.DATABASE_SSL_CA;
+const originalCaFile = process.env.DATABASE_SSL_CA_FILE;
 
 afterEach(() => {
   setPoolForTests(undefined);
   if (originalUrl === undefined) delete process.env.DATABASE_URL;
   else process.env.DATABASE_URL = originalUrl;
+  if (originalCa === undefined) delete process.env.DATABASE_SSL_CA;
+  else process.env.DATABASE_SSL_CA = originalCa;
+  if (originalCaFile === undefined) delete process.env.DATABASE_SSL_CA_FILE;
+  else process.env.DATABASE_SSL_CA_FILE = originalCaFile;
 });
 
 describe('PostgreSQL storage configuration', () => {
@@ -34,6 +45,38 @@ describe('PostgreSQL storage configuration', () => {
   it('rejects connection strings that explicitly disable TLS', () => {
     process.env.DATABASE_URL = 'postgresql://user:pass@db.supabase.co:5432/postgres?sslmode=disable';
     expect(databaseConfiguration()).toMatchObject({ configured: false, error: 'DATABASE_URL requests a non-TLS connection. PostgreSQL connections must use TLS.' });
+  });
+
+  it('always enables certificate verification and accepts an actual trusted CA from the Node trust store', () => {
+    delete process.env.DATABASE_SSL_CA;
+    delete process.env.DATABASE_SSL_CA_FILE;
+    expect(databaseTlsOptions()).toEqual({ rejectUnauthorized: true });
+    const trustedCa = rootCertificates.find((certificate) => new X509Certificate(certificate).ca);
+    expect(trustedCa).toBeTruthy();
+    process.env.DATABASE_SSL_CA = trustedCa!;
+    expect(databaseTlsOptions()).toEqual({ rejectUnauthorized: true, ca: trustedCa });
+  });
+
+  it('loads a trusted CA from a server-side certificate file', () => {
+    delete process.env.DATABASE_SSL_CA;
+    const trustedCa = rootCertificates.find((certificate) => new X509Certificate(certificate).ca)!;
+    const path = resolve(process.cwd(), '../../.codex-test-tmp', `ca-${randomUUID()}.pem`);
+    writeFileSync(path, trustedCa, { encoding: 'utf8', flag: 'wx' });
+    try {
+      process.env.DATABASE_SSL_CA_FILE = path;
+      expect(databaseTlsOptions()).toEqual({ rejectUnauthorized: true, ca: trustedCa });
+    } finally {
+      delete process.env.DATABASE_SSL_CA_FILE;
+      unlinkSync(path);
+    }
+  });
+
+  it('rejects malformed or non-CA certificates and never disables verification as a fallback', () => {
+    delete process.env.DATABASE_SSL_CA_FILE;
+    process.env.DATABASE_SSL_CA = 'not a certificate';
+    expect(() => databaseTlsOptions()).toThrow('DATABASE_SSL_CA must contain only PEM-encoded CA certificate(s) from Supabase Database Settings.');
+    expect(databaseConnectionErrorMessage('SELF_SIGNED_CERT_IN_CHAIN')).toContain('Add the project CA downloaded from Supabase Database Settings');
+    expect(databaseTlsOptions).toThrow();
   });
 
   it('reports malformed and placeholder values as invalid instead of missing', () => {
@@ -108,5 +151,31 @@ describe('PostgreSQL storage configuration', () => {
       connected: false,
       error: 'PostgreSQL rejected the configured username or password. Check DATABASE_URL in the API service settings.',
     });
+  });
+
+  it('reports an untrusted TLS chain as configured but disconnected', async () => {
+    process.env.DATABASE_URL = 'postgresql://user:pass@db.supabase.co:5432/postgres';
+    const fakePool = { connect: async () => { throw Object.assign(new Error('self-signed certificate in certificate chain'), { code: 'SELF_SIGNED_CERT_IN_CHAIN' }); } } as unknown as Pool;
+    setPoolForTests(fakePool);
+    await expect(checkDatabaseHealth()).resolves.toMatchObject({
+      configured: true,
+      connected: false,
+      error: expect.stringContaining('DATABASE_SSL_CA'),
+    });
+  });
+
+  it('uses the same shared pool for reminder dispatch and database operations', async () => {
+    process.env.DATABASE_URL = 'postgresql://user:pass@db.supabase.co:5432/postgres';
+    let connects = 0;
+    const client = {
+      async query(sql: string) {
+        if (/select r\.\*/i.test(sql)) return { rows: [], rowCount: 0 };
+        return { rows: [], rowCount: 0 };
+      }, release() {},
+    };
+    setPoolForTests({ connect: async () => { connects++; return client; } } as unknown as Pool);
+    const { dispatchDueRemindersDatabase } = await import('./postgresStore.js');
+    await expect(dispatchDueRemindersDatabase()).resolves.toBe(0);
+    expect(connects).toBe(1);
   });
 });
