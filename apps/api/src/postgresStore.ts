@@ -264,12 +264,15 @@ async function deleteRemovedRows<T extends { id: string }>(client: PoolClient, t
   for (const oldValue of before) if (!afterIds.has(oldValue.id)) await deleteOne(client, table, oldValue.id, idColumn);
 }
 
-async function syncRows<T extends { id: string }>(client: PoolClient, table: string, before: T[], after: T[], map: (value: T, isNew: boolean) => Row, updates = true, idColumn = 'id', deleteMissing = true): Promise<void> {
+async function syncRows<T extends { id: string }>(client: PoolClient, table: string, before: T[], after: T[], map: (value: T, isNew: boolean) => Row, updates = true, idColumn = 'id', deleteMissing = true, beforeInsert?: (value: T) => Promise<void>): Promise<void> {
   const beforeById = new Map(before.map((value) => [value.id, value]));
   if (deleteMissing) await deleteRemovedRows(client, table, before, after, idColumn);
   for (const value of after) {
     const old = beforeById.get(value.id);
-    if (!old) await writeOne(client, table, value.id, map(value, true), true);
+    if (!old) {
+      await beforeInsert?.(value);
+      await writeOne(client, table, value.id, map(value, true), true);
+    }
     else if (updates && changed(old, value)) await writeOne(client, table, value.id, map(value, false), false, idColumn);
   }
 }
@@ -360,7 +363,34 @@ async function persistState(client: PoolClient, before: CGBSState, after: CGBSSt
   ]), true, 'user_id');
   await syncRows(client, 'activities', before.activities, after.activities, (x, isNew) => rowObject([
     ['lead_id', x.leadId], ['activity_type', x.type], ['title', x.title], ['detail', x.detail], ['created_by', isNew ? actor.id : profileId(x.createdBy, meta, actor.id)], ['created_at', isNew ? x.createdAt : undefined],
-  ]), false);
+  ]), false, 'id', true, async (item) => {
+    // Temporary production diagnostic for the activities_insert RLS failure.
+    // Keep this on the same authenticated transaction and log only booleans and role.
+    const probe = await client.query<{
+      creator_matches_auth_uid: boolean | null;
+      jwt_subject_matches_actor: boolean | null;
+      profile_role: string | null;
+      can_manage_team: boolean | null;
+      lead_visible: boolean | null;
+    }>(`select
+      (auth.uid() = $1::uuid) as creator_matches_auth_uid,
+      (current_setting('request.jwt.claim.sub', true) = $2::text) as jwt_subject_matches_actor,
+      public.current_role()::text as profile_role,
+      public.can_manage_team() as can_manage_team,
+      exists (select 1 from public.leads l where l.id = $3::uuid) as lead_visible`, [actor.id, actor.id, item.leadId]);
+    const result = probe.rows[0];
+    const diagnostic = {
+      creatorMatchesAuthUid: Boolean(result?.creator_matches_auth_uid),
+      jwtSubjectMatchesActor: Boolean(result?.jwt_subject_matches_actor),
+      profileRole: result?.profile_role || null,
+      canManageTeam: Boolean(result?.can_manage_team),
+      leadVisible: Boolean(result?.lead_visible),
+    };
+    console.info('CRM activity RLS preflight:', diagnostic);
+    if (!diagnostic.creatorMatchesAuthUid || !diagnostic.jwtSubjectMatchesActor || !diagnostic.leadVisible) {
+      throw new Error('Activity insert authorization preflight failed. See the boolean CRM activity RLS preflight fields in API logs.');
+    }
+  });
   await syncRows(client, 'email_templates', before.templates, after.templates, (x, isNew) => rowObject([['name', x.name], ['subject', x.subject], ['body', x.body], ['updated_by', actor.id], ['created_by', isNew ? actor.id : undefined]]));
   await syncRows(client, 'sales_targets', before.targets, after.targets, (x, isNew) => rowObject([
     ['metric', x.metric], ['target_value', x.targetValue], ['period', x.period], ['starts_on', x.startDate], ['ends_on', x.endDate], ['owner_scope', x.ownerType],
