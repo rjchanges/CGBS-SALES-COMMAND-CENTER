@@ -375,14 +375,14 @@ async function persistState(client: PoolClient, before: CGBSState, after: CGBSSt
   ]), true, 'user_id');
   const previousActivityIds = new Set(before.activities.map((item) => item.id));
   const previousLeadIds = new Set(before.leads.map((item) => item.id));
-  const afterLeadIds = new Set(after.leads.map((item) => item.id));
   const newLeadIds = after.leads.filter((item) => !previousLeadIds.has(item.id)).map((item) => item.id);
   const activityLeadIdById = new Map<string, string>();
   let orphanActivityIndex = 0;
   for (const activity of after.activities) {
     if (previousActivityIds.has(activity.id)) continue;
     let leadId = activity.leadId;
-    if (!afterLeadIds.has(leadId) && newLeadIds[orphanActivityIndex]) {
+    const isLeadCreationActivity = activity.title === 'Lead created' || activity.title === 'Lead imported';
+    if (isLeadCreationActivity && newLeadIds[orphanActivityIndex]) {
       leadId = newLeadIds[orphanActivityIndex]!;
       orphanActivityIndex += 1;
     }
