@@ -378,6 +378,7 @@ async function persistState(client: PoolClient, before: CGBSState, after: CGBSSt
       jwt_subject_matches_actor: boolean;
       profile_role: string | null;
       can_manage_team: boolean;
+      lead_exists: boolean;
       lead_assigned_to_actor: boolean;
       lead_is_shared: boolean;
       can_access_lead: boolean;
@@ -386,6 +387,7 @@ async function persistState(client: PoolClient, before: CGBSState, after: CGBSSt
       (current_setting('request.jwt.claim.sub', true) = $1::text) as jwt_subject_matches_actor,
       public.current_role()::text as profile_role,
       public.can_manage_team() as can_manage_team,
+      exists (select 1 from public.leads l where l.id = $2::uuid) as lead_exists,
       exists (select 1 from public.leads l where l.id = $2::uuid and l.assigned_to = auth.uid()) as lead_assigned_to_actor,
       exists (select 1 from public.leads l where l.id = $2::uuid and l.is_shared = true) as lead_is_shared,
       public.can_access_lead($2::uuid) as can_access_lead`,
@@ -395,6 +397,7 @@ async function persistState(client: PoolClient, before: CGBSState, after: CGBSSt
       jwtSubjectMatchesActor: Boolean(probe.rows[0]?.jwt_subject_matches_actor),
       profileRole: probe.rows[0]?.profile_role || null,
       canManageTeam: Boolean(probe.rows[0]?.can_manage_team),
+      leadExists: Boolean(probe.rows[0]?.lead_exists),
       leadAssignedToActor: Boolean(probe.rows[0]?.lead_assigned_to_actor),
       leadIsShared: Boolean(probe.rows[0]?.lead_is_shared),
       canAccessLead: Boolean(probe.rows[0]?.can_access_lead),
