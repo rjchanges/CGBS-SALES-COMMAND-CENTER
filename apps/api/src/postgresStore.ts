@@ -370,6 +370,36 @@ async function persistState(client: PoolClient, before: CGBSState, after: CGBSSt
   await syncRows(client, 'calling_profiles', before.callingProfiles.map((x) => ({ ...x, id: x.userId })), after.callingProfiles.map((x) => ({ ...x, id: x.userId })), (x) => rowObject([
     ['user_id', x.userId], ['phone', x.phone], ['verified_at', x.verifiedAt], ['pending_phone', x.pendingPhone], ['verification_code_hash', x.verificationCodeHash], ['verification_expires_at', x.verificationExpiresAt], ['verification_attempts', x.verificationAttempts], ['updated_at', x.updatedAt],
   ]), true, 'user_id');
+  const previousActivityIds = new Set(before.activities.map((item) => item.id));
+  for (const activity of after.activities) {
+    if (previousActivityIds.has(activity.id)) continue;
+    const probe = await client.query<{
+      creator_matches_auth_uid: boolean;
+      jwt_subject_matches_actor: boolean;
+      profile_role: string | null;
+      can_manage_team: boolean;
+      lead_assigned_to_actor: boolean;
+      lead_is_shared: boolean;
+      can_access_lead: boolean;
+    }>(`select
+      (auth.uid() = $1::uuid) as creator_matches_auth_uid,
+      (current_setting('request.jwt.claim.sub', true) = $1::text) as jwt_subject_matches_actor,
+      public.current_role()::text as profile_role,
+      public.can_manage_team() as can_manage_team,
+      exists (select 1 from public.leads l where l.id = $2::uuid and l.assigned_to = auth.uid()) as lead_assigned_to_actor,
+      exists (select 1 from public.leads l where l.id = $2::uuid and l.is_shared = true) as lead_is_shared,
+      public.can_access_lead($2::uuid) as can_access_lead`,
+    [actor.id, activity.leadId]);
+    console.info('CRM activity RLS preflight:', {
+      creatorMatchesAuthUid: Boolean(probe.rows[0]?.creator_matches_auth_uid),
+      jwtSubjectMatchesActor: Boolean(probe.rows[0]?.jwt_subject_matches_actor),
+      profileRole: probe.rows[0]?.profile_role || null,
+      canManageTeam: Boolean(probe.rows[0]?.can_manage_team),
+      leadAssignedToActor: Boolean(probe.rows[0]?.lead_assigned_to_actor),
+      leadIsShared: Boolean(probe.rows[0]?.lead_is_shared),
+      canAccessLead: Boolean(probe.rows[0]?.can_access_lead),
+    });
+  }
   await syncRows(client, 'activities', before.activities, after.activities, (x, isNew) => rowObject([
     ['lead_id', x.leadId], ['activity_type', x.type], ['title', x.title], ['detail', x.detail], ['created_by', isNew ? actor.id : profileId(x.createdBy, meta, actor.id)], ['created_at', isNew ? x.createdAt : undefined],
   ]), false);
