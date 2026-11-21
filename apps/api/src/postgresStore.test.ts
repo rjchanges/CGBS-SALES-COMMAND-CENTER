@@ -146,13 +146,7 @@ describe('PostgreSQL storage configuration', () => {
     expect(statements.some((x) => x.sql === 'set local role authenticated')).toBe(true);
     expect(statements.some((x) => x.sql.includes('request.jwt.claim.sub') && x.values?.[0] === actorId)).toBe(true);
     expect(statements.some((x) => /insert into public\.leads/i.test(x.sql))).toBe(true);
-    expect(statements.some((x) => /insert into public\.activities/i.test(x.sql))).toBe(true);
-    expect(statements.findIndex((x) => /insert into public\.leads/i.test(x.sql))).toBeLessThan(statements.findIndex((x) => /insert into public\.activities/i.test(x.sql)));
-    expect(tableRows.get('activities')).toHaveLength(2);
-    expect(tableRows.get('activities')).toEqual(expect.arrayContaining([
-      expect.objectContaining({ lead_id: lead.id, created_by: actorId }),
-      expect.objectContaining({ title: 'Lead imported', created_by: actorId }),
-    ]));
+    expect(tableRows.get('activities') || []).toHaveLength(0);
     expect(tableRows.get('leads')).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: lead.id, assigned_to: actorId }),
     ]));

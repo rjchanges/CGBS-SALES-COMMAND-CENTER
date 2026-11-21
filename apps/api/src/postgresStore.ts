@@ -379,6 +379,7 @@ async function persistState(client: PoolClient, before: CGBSState, after: CGBSSt
   const activityLeadIdById = new Map<string, string>();
   let orphanActivityIndex = 0;
   for (const activity of after.activities) {
+    if (activity.title === 'Lead created' || activity.title === 'Lead imported') continue;
     if (previousActivityIds.has(activity.id)) continue;
     let leadId = activity.leadId;
     const isLeadCreationActivity = activity.title === 'Lead created' || activity.title === 'Lead imported';
@@ -417,7 +418,9 @@ async function persistState(client: PoolClient, before: CGBSState, after: CGBSSt
       canAccessLead: Boolean(probe.rows[0]?.can_access_lead),
     });
   }
-  await syncRows(client, 'activities', before.activities, after.activities, (x, isNew) => rowObject([
+  const derivedLeadActivities = (items: CGBSState['activities']) =>
+    items.filter((item) => item.title !== 'Lead created' && item.title !== 'Lead imported');
+  await syncRows(client, 'activities', derivedLeadActivities(before.activities), derivedLeadActivities(after.activities), (x, isNew) => rowObject([
     ['lead_id', isNew ? activityLeadIdById.get(x.id) || x.leadId : x.leadId], ['activity_type', x.type], ['title', x.title], ['detail', x.detail], ['created_by', isNew ? actor.id : profileId(x.createdBy, meta, actor.id)], ['created_at', isNew ? x.createdAt : undefined],
   ]), false);
   await syncRows(client, 'email_templates', before.templates, after.templates, (x, isNew) => rowObject([['name', x.name], ['subject', x.subject], ['body', x.body], ['updated_by', actor.id], ['created_by', isNew ? actor.id : undefined]]));
