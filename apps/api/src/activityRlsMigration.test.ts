@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 const migration = readFileSync(new URL('../../../supabase/migrations/202611210002_activity_rls_lead_scope.sql', import.meta.url), 'utf8');
 const directRoleMigration = readFileSync(new URL('../../../supabase/migrations/202611210003_activity_rls_lead_scope_direct_role.sql', import.meta.url), 'utf8');
+const creatorMigration = readFileSync(new URL('../../../supabase/migrations/202611210004_activity_rls_lead_creator.sql', import.meta.url), 'utf8');
 
 describe('activity lead-scope RLS migration', () => {
   it('uses a hardened boolean helper instead of a nested RLS-filtered lead SELECT', () => {
@@ -23,5 +24,12 @@ describe('activity lead-scope RLS migration', () => {
     expect(directRoleMigration).toMatch(/p\.role in \('admin','manager'\)/i);
     expect(directRoleMigration).toMatch(/l\.assigned_to = auth\.uid\(\)\s+or l\.is_shared = true/i);
     expect(directRoleMigration).toMatch(/revoke all on function public\.can_access_lead\(uuid\) from public/i);
+  });
+
+  it('allows only the lead creator as an additional own-lead access condition', () => {
+    expect(creatorMigration).toMatch(/l\.created_by = auth\.uid\(\)/i);
+    expect(creatorMigration).toMatch(/p\.role in \('admin','manager'\)/i);
+    expect(creatorMigration).toMatch(/l\.assigned_to = auth\.uid\(\)/i);
+    expect(creatorMigration).toMatch(/l\.is_shared = true/i);
   });
 });
