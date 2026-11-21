@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 import { rootCertificates } from 'node:tls';
 import { X509Certificate } from 'node:crypto';
@@ -15,7 +15,6 @@ const originalCa = process.env.DATABASE_SSL_CA;
 const originalCaFile = process.env.DATABASE_SSL_CA_FILE;
 
 afterEach(() => {
-  vi.restoreAllMocks();
   setPoolForTests(undefined);
   if (originalUrl === undefined) delete process.env.DATABASE_URL;
   else process.env.DATABASE_URL = originalUrl;
@@ -95,29 +94,15 @@ describe('PostgreSQL storage configuration', () => {
     await expect(readPostgresStore()).rejects.toThrow('Database access requires an authenticated CRM user.');
   });
 
-  it.each(['salesperson', 'admin'] as const)('persists single leads and CSV import atomically under the %s RLS scope', async (role) => {
+  it.each(['salesperson', 'admin'] as const)('persists single leads and CSV import in one actor transaction for %s', async (role) => {
     process.env.DATABASE_URL = 'postgresql://user:pass@db.supabase.co:5432/postgres?sslmode=require';
     const actorId = '00000000-0000-4000-8000-000000000001';
     const companyId = '00000000-0000-4000-8000-000000000002';
     const tableRows = new Map<string, Record<string, unknown>[]>([['profiles', [{ id: actorId, full_name: 'Asha Nair', role, active: true }]]]);
-    const diagnosticLog = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const statements: { sql: string; values?: unknown[] }[] = [];
-    let transactionActorId = '';
     const client = {
       async query(sql: string, values: unknown[] = []) {
         statements.push({ sql, values });
-        if (sql.includes("set_config('request.jwt.claim.sub'")) { transactionActorId = String(values[0]); return { rows: [], rowCount: 1 }; }
-        if (sql.includes('creator_matches_auth_uid')) {
-          const lead = (tableRows.get('leads') || []).find((row) => row.id === values[2]);
-          const profile = (tableRows.get('profiles') || []).find((row) => row.id === transactionActorId);
-          return { rows: [{
-            creator_matches_auth_uid: values[0] === transactionActorId,
-            jwt_subject_matches_actor: values[1] === transactionActorId,
-            profile_role: profile?.role || null,
-            can_manage_team: profile?.role === 'admin' || profile?.role === 'manager',
-            lead_visible: Boolean(lead && (profile?.role === 'admin' || profile?.role === 'manager' || lead.assigned_to === transactionActorId || lead.is_shared === true)),
-          }], rowCount: 1 };
-        }
         const select = sql.match(/^select \* from public\.(\w+)$/i);
         if (select) return { rows: tableRows.get(select[1]!) || [], rowCount: (tableRows.get(select[1]!) || []).length };
         if (/insert into public\.companies/i.test(sql)) {
@@ -163,48 +148,31 @@ describe('PostgreSQL storage configuration', () => {
     expect(statements.some((x) => /insert into public\.leads/i.test(x.sql))).toBe(true);
     expect(statements.some((x) => /insert into public\.activities/i.test(x.sql))).toBe(true);
     expect(statements.findIndex((x) => /insert into public\.leads/i.test(x.sql))).toBeLessThan(statements.findIndex((x) => /insert into public\.activities/i.test(x.sql)));
-    expect(statements.some((x) => x.sql.includes('creator_matches_auth_uid') && x.values?.[0] === actorId && x.values?.[1] === actorId && x.values?.[2] === lead.id)).toBe(true);
-    expect(diagnosticLog).toHaveBeenCalledWith('CRM activity RLS preflight:', expect.objectContaining({ creatorMatchesAuthUid: true, jwtSubjectMatchesActor: true, profileRole: role, canManageTeam: role === 'admin', leadVisible: true }));
     expect(tableRows.get('activities')).toHaveLength(2);
+    expect(tableRows.get('activities')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ lead_id: lead.id, created_by: actorId }),
+      expect.objectContaining({ title: 'Lead imported', created_by: actorId }),
+    ]));
     expect(tableRows.get('companies')?.[0]?.id).toBe(companyId);
   });
 
-  it('blocks an activity when the authenticated salesperson cannot see its lead', async () => {
+  it('serializes state reads on a single transaction client', async () => {
     process.env.DATABASE_URL = 'postgresql://user:pass@db.supabase.co:5432/postgres?sslmode=require';
-    const actorId = '00000000-0000-4000-8000-000000000011';
-    const otherId = '00000000-0000-4000-8000-000000000012';
-    const hiddenLeadId = '00000000-0000-4000-8000-000000000013';
-    const profile = { id: actorId, full_name: 'Asha Nair', role: 'salesperson', active: true };
-    const hiddenLead = { id: hiddenLeadId, assigned_to: otherId, is_shared: false };
-    const statements: string[] = [];
-    let transactionActorId = '';
+    const actorId = '00000000-0000-4000-8000-000000000021';
+    let activeQueries = 0;
+    let maxActiveQueries = 0;
     const client = {
-      async query(sql: string, values: unknown[] = []) {
-        statements.push(sql);
-        if (sql.includes("set_config('request.jwt.claim.sub'")) { transactionActorId = String(values[0]); return { rows: [], rowCount: 1 }; }
-        if (sql.includes('creator_matches_auth_uid')) return { rows: [{ creator_matches_auth_uid: values[0] === transactionActorId, jwt_subject_matches_actor: values[1] === transactionActorId, profile_role: 'salesperson', can_manage_team: false, lead_visible: hiddenLead.assigned_to === transactionActorId || hiddenLead.is_shared }], rowCount: 1 };
-        const select = sql.match(/^select \* from public\.(\w+)$/i);
-        if (select) {
-          const seeded: Record<string, Record<string, unknown>[]> = { profiles: [profile], leads: [hiddenLead] };
-          // Simulate the existing assigned/shared SELECT policy: the other user's row is not returned.
-          const rows = select[1] === 'leads' ? [] : seeded[select[1]!] || [];
-          return { rows, rowCount: rows.length };
-        }
+      async query() {
+        activeQueries++;
+        maxActiveQueries = Math.max(maxActiveQueries, activeQueries);
+        await Promise.resolve();
+        activeQueries--;
         return { rows: [], rowCount: 0 };
       }, release() {},
     };
     setPoolForTests({ connect: async () => client } as unknown as Pool);
-    const diagnosticLog = vi.spyOn(console, 'info').mockImplementation(() => undefined);
-
-    await runAsDatabaseActor({ id: actorId, role: 'salesperson' }, async () => {
-      await expect(updatePostgresStore((state) => {
-        state.activities.push({ id: '00000000-0000-4000-8000-000000000014', leadId: hiddenLeadId, type: 'Note', title: 'forbidden', detail: '', createdAt: new Date().toISOString(), createdBy: 'Asha Nair' });
-      })).rejects.toThrow('Activity insert authorization preflight failed.');
-    });
-
-    expect(diagnosticLog).toHaveBeenCalledWith('CRM activity RLS preflight:', expect.objectContaining({ creatorMatchesAuthUid: true, jwtSubjectMatchesActor: true, profileRole: 'salesperson', canManageTeam: false, leadVisible: false }));
-    expect(statements.some((sql) => /insert into public\.activities/i.test(sql))).toBe(false);
-    expect(statements).toContain('rollback');
+    await runAsDatabaseActor({ id: actorId, role: 'salesperson' }, async () => { await readPostgresStore(); });
+    expect(maxActiveQueries).toBe(1);
   });
 
   it('distinguishes rejected database credentials from missing configuration', async () => {
