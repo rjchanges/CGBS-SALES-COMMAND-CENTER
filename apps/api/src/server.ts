@@ -522,6 +522,9 @@ api.get('/reports/summary', async (_req, res) => res.json(calculateMetrics(await
 app.use('/api', api);
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const databaseCode = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code?: unknown }).code || '') : '';
+  const pgDetail = typeof error === 'object' && error !== null && 'detail' in error ? String((error as { detail?: unknown }).detail || '') : '';
+  const pgTable = typeof error === 'object' && error !== null && 'table' in error ? String((error as { table?: unknown }).table || '') : '';
+  const pgConstraint = typeof error === 'object' && error !== null && 'constraint' in error ? String((error as { constraint?: unknown }).constraint || '') : '';
   if (!demoMode) {
     const configuration = databaseConfiguration();
     if (!configuration.configured) return res.status(503).json({ error: configuration.error || 'PostgreSQL database configuration is invalid.' });
@@ -529,7 +532,18 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (databaseCode === '23505') return res.status(409).json({ error: 'This change conflicts with an existing CRM record.' });
     const connectionError = databaseConnectionErrorMessage(databaseCode);
     if (connectionError) return res.status(503).json({ error: connectionError });
-    console.error('CRM PostgreSQL request failed:', error instanceof Error ? error.message : 'unknown database error');
+    console.error('CRM PostgreSQL request failed:', {
+      message: error instanceof Error ? error.message : 'unknown database error',
+      code: databaseCode || null,
+      detail: pgDetail || null,
+      table: pgTable || null,
+      constraint: pgConstraint || null,
+    });
+    if (databaseCode === '42501') {
+      return res.status(403).json({
+        error: `PostgreSQL RLS denied ${pgTable ? `the ${pgTable} table` : 'this CRM database operation'}${pgConstraint ? ` (${pgConstraint})` : ''}.`,
+      });
+    }
     return res.status(503).json({ error: 'The CRM database request failed. Check /api/health and the API logs.' });
   }
   console.error(error instanceof Error ? error.message : error);
