@@ -39,7 +39,20 @@ if (!demoMode) {
 } else {
   authMiddleware = requireDemoSession(demoMode);
 }
-app.use(cors({ origin: process.env.WEB_ORIGIN || 'http://localhost:5173' }));
+const configuredWebOrigins = (process.env.WEB_ORIGIN || 'http://localhost:5173')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const deployedWebOrigin = 'https://cgbs-sales-command-center-1.onrender.com';
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || configuredWebOrigins.includes(origin) || origin === deployedWebOrigin) {
+      callback(null, true);
+      return;
+    }
+    callback(null, false);
+  },
+}));
 app.use(express.json({ limit: '4mb' }));
 app.use(express.urlencoded({ extended: false }));
 app.use('/api', rateLimit({ windowMs: 60_000, limit: 180, standardHeaders: 'draft-7', legacyHeaders: false }));
