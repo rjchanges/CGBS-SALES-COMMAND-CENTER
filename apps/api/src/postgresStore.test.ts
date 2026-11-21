@@ -153,6 +153,9 @@ describe('PostgreSQL storage configuration', () => {
       expect.objectContaining({ lead_id: lead.id, created_by: actorId }),
       expect.objectContaining({ title: 'Lead imported', created_by: actorId }),
     ]));
+    expect(tableRows.get('leads')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: lead.id, assigned_to: actorId }),
+    ]));
     expect(tableRows.get('companies')?.[0]?.id).toBe(companyId);
   });
 

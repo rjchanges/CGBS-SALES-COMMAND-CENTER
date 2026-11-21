@@ -306,11 +306,14 @@ async function ensureCompanies(client: PoolClient, leads: Lead[], meta: Snapshot
   return idByName;
 }
 
-function leadRow(lead: Lead, companyId: string | undefined, meta: SnapshotMeta, actorId: string, isNew: boolean): Row {
+function leadRow(lead: Lead, companyId: string | undefined, meta: SnapshotMeta, actorId: string, actorRole: 'admin' | 'manager' | 'salesperson', isNew: boolean): Row {
+  const assignedToId = isNew && actorRole === 'salesperson'
+    ? actorId
+    : profileId(lead.assignedTo, meta, actorId);
   return rowObject([
     ['company_id', companyId || null], ['full_name', lead.name], ['role_title', lead.role], ['email', lead.email || null], ['phone', lead.phone || null], ['linkedin_url', lead.linkedin || null],
     ['source', lead.source], ['status', lead.status], ['priority', lead.priority], ['estimated_revenue', lead.revenue], ['currency', lead.currency], ['progression', lead.progression], ['win_probability', lead.probability],
-    ['assigned_to', profileId(lead.assignedTo, meta, actorId)], ['is_shared', Boolean(lead.isShared)], ['next_follow_up_at', lead.nextFollowUp], ['last_contacted_at', lead.lastContacted], ['expected_close_at', lead.expectedClose],
+    ['assigned_to', assignedToId], ['is_shared', Boolean(lead.isShared)], ['next_follow_up_at', lead.nextFollowUp], ['last_contacted_at', lead.lastContacted], ['expected_close_at', lead.expectedClose],
     ['ai_outreach_topic', lead.aiOutreachTopic], ['ai_opening_message', lead.aiOpeningMessage], ['ai_email_subject', lead.aiEmailSubject], ['ai_follow_up_approach', lead.aiFollowUpApproach], ['notes', lead.notes], ['archived', lead.archived],
     ['updated_by', actorId], ['alternative_contact_method', lead.alternativeContactMethod || null], ['alternative_contact_notes', lead.alternativeContactNotes || ''], ['actual_close_at', lead.actualCloseAt || null],
     ['closed_by', lead.closedById || null], ['loss_reason', lead.lossReason || ''], ['pre_close_opportunity_stages', JSON.stringify(lead.preCloseOpportunityStages || [])], ['change_history', JSON.stringify(lead.changeHistory || [])],
@@ -337,7 +340,7 @@ async function persistState(client: PoolClient, before: CGBSState, after: CGBSSt
   const companyBefore = new Map(meta.companies.map((c) => [c.id, c]));
 
   // Insert/update parents before related rows. Deletes run in reverse dependency order.
-  await syncRows(client, 'leads', before.leads, after.leads, (x, isNew) => leadRow(x, companyIds.get(x.company.toLowerCase()), meta, actor.id, isNew), true, 'id', false);
+  await syncRows(client, 'leads', before.leads, after.leads, (x, isNew) => leadRow(x, companyIds.get(x.company.toLowerCase()), meta, actor.id, actor.role, isNew), true, 'id', false);
   for (const lead of after.leads) {
     const id = companyIds.get(lead.company.toLowerCase()); if (!id) continue;
     const oldCompany = companyBefore.get(id); if (!oldCompany) continue;
