@@ -134,7 +134,7 @@ describe('PostgreSQL storage configuration', () => {
     await runAsDatabaseActor({ id: actorId, role }, async () => {
       await updatePostgresStore((state) => {
         state.leads.push(lead);
-        state.activities.push({ id: '00000000-0000-4000-8000-000000000004', leadId: lead.id, type: 'Note', title: 'Lead created', detail: '', createdAt: lead.createdAt, createdBy: 'Asha Nair' });
+        state.activities.push({ id: '00000000-0000-4000-8000-000000000004', leadId: '00000000-0000-4000-8000-000000000099', type: 'Note', title: 'Lead created', detail: '', createdAt: lead.createdAt, createdBy: 'Asha Nair' });
         return lead.id;
       });
       const restored = await readPostgresStore();

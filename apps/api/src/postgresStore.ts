@@ -374,8 +374,19 @@ async function persistState(client: PoolClient, before: CGBSState, after: CGBSSt
     ['user_id', x.userId], ['phone', x.phone], ['verified_at', x.verifiedAt], ['pending_phone', x.pendingPhone], ['verification_code_hash', x.verificationCodeHash], ['verification_expires_at', x.verificationExpiresAt], ['verification_attempts', x.verificationAttempts], ['updated_at', x.updatedAt],
   ]), true, 'user_id');
   const previousActivityIds = new Set(before.activities.map((item) => item.id));
+  const previousLeadIds = new Set(before.leads.map((item) => item.id));
+  const afterLeadIds = new Set(after.leads.map((item) => item.id));
+  const newLeadIds = after.leads.filter((item) => !previousLeadIds.has(item.id)).map((item) => item.id);
+  const activityLeadIdById = new Map<string, string>();
+  let orphanActivityIndex = 0;
   for (const activity of after.activities) {
     if (previousActivityIds.has(activity.id)) continue;
+    let leadId = activity.leadId;
+    if (!afterLeadIds.has(leadId) && newLeadIds[orphanActivityIndex]) {
+      leadId = newLeadIds[orphanActivityIndex]!;
+      orphanActivityIndex += 1;
+    }
+    activityLeadIdById.set(activity.id, leadId);
     const probe = await client.query<{
       creator_matches_auth_uid: boolean;
       jwt_subject_matches_actor: boolean;
@@ -394,7 +405,7 @@ async function persistState(client: PoolClient, before: CGBSState, after: CGBSSt
       exists (select 1 from public.leads l where l.id = $2::uuid and l.assigned_to = auth.uid()) as lead_assigned_to_actor,
       exists (select 1 from public.leads l where l.id = $2::uuid and l.is_shared = true) as lead_is_shared,
       public.can_access_lead($2::uuid) as can_access_lead`,
-    [actor.id, activity.leadId]);
+    [actor.id, leadId]);
     console.info('CRM activity RLS preflight:', {
       creatorMatchesAuthUid: Boolean(probe.rows[0]?.creator_matches_auth_uid),
       jwtSubjectMatchesActor: Boolean(probe.rows[0]?.jwt_subject_matches_actor),
@@ -407,7 +418,7 @@ async function persistState(client: PoolClient, before: CGBSState, after: CGBSSt
     });
   }
   await syncRows(client, 'activities', before.activities, after.activities, (x, isNew) => rowObject([
-    ['lead_id', x.leadId], ['activity_type', x.type], ['title', x.title], ['detail', x.detail], ['created_by', isNew ? actor.id : profileId(x.createdBy, meta, actor.id)], ['created_at', isNew ? x.createdAt : undefined],
+    ['lead_id', isNew ? activityLeadIdById.get(x.id) || x.leadId : x.leadId], ['activity_type', x.type], ['title', x.title], ['detail', x.detail], ['created_by', isNew ? actor.id : profileId(x.createdBy, meta, actor.id)], ['created_at', isNew ? x.createdAt : undefined],
   ]), false);
   await syncRows(client, 'email_templates', before.templates, after.templates, (x, isNew) => rowObject([['name', x.name], ['subject', x.subject], ['body', x.body], ['updated_by', actor.id], ['created_by', isNew ? actor.id : undefined]]));
   await syncRows(client, 'sales_targets', before.targets, after.targets, (x, isNew) => rowObject([
