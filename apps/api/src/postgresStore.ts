@@ -342,6 +342,16 @@ async function persistState(client: PoolClient, before: CGBSState, after: CGBSSt
   // Insert/update parents before related rows. Deletes run in reverse dependency order.
   await syncRows(client, 'leads', before.leads, after.leads, (x, isNew) => leadRow(x, companyIds.get(x.company.toLowerCase()), meta, actor.id, actor.role, isNew), true, 'id', false);
   for (const lead of after.leads) {
+    if (before.leads.some((item) => item.id === lead.id)) continue;
+    const visible = await client.query<{ id: string }>(
+      'select id from public.leads where id = $1',
+      [lead.id],
+    );
+    if (!visible.rows[0]) {
+      throw new Error('The lead insert was committed only if this transaction succeeds, but the actor cannot currently read the new lead because of database access policies.');
+    }
+  }
+  for (const lead of after.leads) {
     const id = companyIds.get(lead.company.toLowerCase()); if (!id) continue;
     const oldCompany = companyBefore.get(id); if (!oldCompany) continue;
     const fields = companyFields(lead);

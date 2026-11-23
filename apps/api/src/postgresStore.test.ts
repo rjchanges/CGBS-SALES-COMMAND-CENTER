@@ -109,6 +109,12 @@ describe('PostgreSQL storage configuration', () => {
           const row = { id: companyId, name: values[0], website: values[1], logo_url: values[2], industry: values[3], net_worth: values[4] };
           tableRows.set('companies', [row]); return { rows: [{ id: companyId }], rowCount: 1 };
         }
+        if (/^select id from public\.leads where id = \$1$/i.test(sql)) {
+          const leadRows = tableRows.get('leads') || [];
+          const leadId = String(values[0]);
+          const lead = leadRows.find((row) => String(row.id) === leadId);
+          return { rows: lead ? [{ id: leadId }] : [], rowCount: lead ? 1 : 0 };
+        }
         if (/select id from public\.companies where lower\(name\)/i.test(sql)) return { rows: [{ id: companyId }], rowCount: 1 };
         const insert = sql.match(/^insert into public\.(\w+) \(([^)]+)\) values/i);
         if (insert) {

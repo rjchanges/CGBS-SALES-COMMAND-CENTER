@@ -26,14 +26,8 @@ function LeadEditor({ lead, onClose, onSaved }: { lead?: Lead; onClose: () => vo
   const submit = form.handleSubmit(async (values) => {
     try {
       const leadValues = { ...values, nextFollowUp: values.nextFollowUp ? new Date(values.nextFollowUp).toISOString() : null };
-      const saved = await request<Lead>(lead ? '/leads/' + lead.id : '/leads', { method: lead ? 'PATCH' : 'POST', body: JSON.stringify(leadValues) });
+      await request<Lead>(lead ? '/leads/' + lead.id : '/leads', { method: lead ? 'PATCH' : 'POST', body: JSON.stringify(leadValues) });
       await onSaved();
-      if (!lead) {
-        const visibleLeads = await request<Lead[]>('/leads');
-        if (!visibleLeads.some((item) => item.id === saved.id)) {
-          throw new Error('The lead was saved, but it is not currently visible. Refresh the Leads page and check the filters.');
-        }
-      }
       toast(lead ? 'Lead updated.' : 'Lead added.'); onClose();
     } catch (error) { toast(error instanceof Error ? error.message : 'Could not save lead.', 'error'); }
   });
