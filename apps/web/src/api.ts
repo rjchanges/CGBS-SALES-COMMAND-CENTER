@@ -9,12 +9,24 @@ const API_ROOT = import.meta.env.DEV ? '' : (import.meta.env.VITE_API_URL || '')
 export class ApiRequestError extends Error {
   constructor(message: string, readonly status: number) { super(message); this.name = 'ApiRequestError'; }
 }
+async function fetchWithApiRetry(url: string, init: RequestInit): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 750 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const sessionResult = supabase ? await supabase.auth.getSession() : null;
   const token = sessionResult?.data.session?.access_token;
   let response: Response;
   try {
-    response = await fetch(API_ROOT + '/api' + path, {
+    response = await fetchWithApiRetry(API_ROOT + '/api' + path, {
       ...init,
       headers: {
         ...(init.body ? { 'Content-Type': 'application/json' } : {}),

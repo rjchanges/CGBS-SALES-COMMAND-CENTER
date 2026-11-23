@@ -5,6 +5,7 @@ import { request } from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
   mockGetSession.mockReset().mockResolvedValue({ data: { session: null } });
 });
 
@@ -25,6 +26,20 @@ describe('API request errors', () => {
     vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockRejectedValue(new TypeError('Failed to fetch')));
 
     await expect(request('/bootstrap')).rejects.toThrow('Check that the API server is running and VITE_API_URL is configured.');
+  });
+
+  it('retries transient network failures before surfacing an API connection error', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ leads: [] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const resultPromise = request<{ leads: unknown[] }>('/bootstrap');
+    await vi.runAllTimersAsync();
+
+    await expect(resultPromise).resolves.toEqual({ leads: [] });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('attaches the current Supabase access token to protected API requests', async () => {
