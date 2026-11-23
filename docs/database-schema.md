@@ -10,4 +10,4 @@ The public.log_call function records the call, updates last-contacted and stage 
 
 Apply the migration in a separate Supabase development project. Create an Auth user, then provision the matching profiles row and admin role from a trusted SQL editor. Run supabase/seed.sql only in a disposable project; it inserts fictional names, reserved example websites and test email addresses.
 
-The current app does not query this schema. Do not treat it as live persistence or an active authorization boundary until the Auth and database adapter is implemented.
+In Supabase mode, the current API uses the PostgreSQL adapter for CRM persistence. Each authenticated request is executed in a transaction after setting the database role to `authenticated` and supplying the verified user's JWT claims, so the database's RLS policies remain in force. Verify that the migrations required by the deployed application have been applied before treating the live database as ready.

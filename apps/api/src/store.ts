@@ -48,11 +48,19 @@ function normalizeState(value: CGBSState): CGBSState {
   };
 }
 export async function readStore(): Promise<CGBSState> {
+  if (!usesLocalDemoStore()) {
+    const { readPostgresStore } = await import('./postgresStore.js');
+    return normalizeState(await readPostgresStore());
+  }
   await ensureStore();
   return normalizeState(JSON.parse(await readFile(dataPath, 'utf8')) as CGBSState);
 }
 
 export async function updateStore<T>(change: (state: CGBSState) => T): Promise<{ state: CGBSState; result: T }> {
+  if (!usesLocalDemoStore()) {
+    const { updatePostgresStore } = await import('./postgresStore.js');
+    return updatePostgresStore((state) => change(normalizeState(state)));
+  }
   let result!: T;
   const operation = writeQueue.then(async () => {
     const state = await readStore();
@@ -67,8 +75,13 @@ export async function updateStore<T>(change: (state: CGBSState) => T): Promise<{
 }
 
 export async function resetStore(): Promise<void> {
+  if (!usesLocalDemoStore()) throw new Error('The local JSON store can only be reset in explicit local demo or test mode.');
   await mkdir(path.dirname(dataPath), { recursive: true });
   await writeFile(dataPath, JSON.stringify(createSeedState(), null, 2), 'utf8');
+}
+
+function usesLocalDemoStore(): boolean {
+  return process.env.NODE_ENV === 'test' || (process.env.DEMO_MODE === 'true' && process.env.NODE_ENV !== 'production');
 }
 
 if (process.argv.some((arg) => arg === '--reset')) {

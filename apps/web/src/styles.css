@@ -38,6 +38,18 @@
 }
 @media print{.sidebar,.topbar,.app-footer,.heading-actions,.mobile-menu{display:none!important}.main-area{margin:0}.content{max-width:none;padding:0}body{background:#fff}.card{box-shadow:none;break-inside:avoid}}
 
+/* Supplied Canopus GBS login banner */
+.login-screen{grid-template-columns:minmax(380px,42%) minmax(0,58%);background:#f9faf7}
+.login-side{position:relative;display:block;align-self:stretch;min-height:calc(100vh - 32px);margin:16px;padding:0;overflow:hidden;background:#001d18;border-radius:30px}
+.login-side:before{display:none}
+.login-banner-image{position:absolute;inset:0;display:block;width:100%;height:100%;object-fit:contain;object-position:center}
+@media(max-width:760px){
+  .login-screen{display:flex;flex-direction:column;min-height:100svh}
+  .login-side{order:-1;align-self:center;width:calc(100% - 24px);height:auto;min-height:unset;aspect-ratio:1312/1167;margin:12px 12px 0;border-radius:20px;flex:none}
+  .login-banner-image{object-fit:contain}
+  .login-card{width:100%;max-width:500px;min-height:unset;padding:32px 28px}
+}
+
 
 /* Canopus Global Business Services sidebar branding and hide/restore behavior */
 :root{--brand-blue:#2866ac;--brand-yellow:#ffcc2f}

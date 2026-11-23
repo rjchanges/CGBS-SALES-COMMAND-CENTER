@@ -26,8 +26,15 @@ function LeadEditor({ lead, onClose, onSaved }: { lead?: Lead; onClose: () => vo
   const submit = form.handleSubmit(async (values) => {
     try {
       const leadValues = { ...values, nextFollowUp: values.nextFollowUp ? new Date(values.nextFollowUp).toISOString() : null };
-      await request<Lead>(lead ? '/leads/' + lead.id : '/leads', { method: lead ? 'PATCH' : 'POST', body: JSON.stringify(leadValues) });
-      await onSaved(); toast(lead ? 'Lead updated.' : 'Lead added.'); onClose();
+      const saved = await request<Lead>(lead ? '/leads/' + lead.id : '/leads', { method: lead ? 'PATCH' : 'POST', body: JSON.stringify(leadValues) });
+      await onSaved();
+      if (!lead) {
+        const visibleLeads = await request<Lead[]>('/leads');
+        if (!visibleLeads.some((item) => item.id === saved.id)) {
+          throw new Error('The lead was saved, but it is not currently visible. Refresh the Leads page and check the filters.');
+        }
+      }
+      toast(lead ? 'Lead updated.' : 'Lead added.'); onClose();
     } catch (error) { toast(error instanceof Error ? error.message : 'Could not save lead.', 'error'); }
   });
   const errorFor = (field: keyof LeadInput) => form.formState.errors[field]?.message;
@@ -349,7 +356,13 @@ export function LeadsPage() {
         {!leads.length && <tr><td colSpan={11}><div className="empty-table"><span><UsersRound size={24} /></span><b>{query || stage || priority || industry || source || owner || followup ? 'No leads match these filters' : 'Your lead list is ready'}</b><small>Add a lead or import a spreadsheet to get started.</small><Button variant="primary" onClick={() => setEditing('new')}><Plus size={16} /> Add your first lead</Button></div></td></tr>}</tbody></table></div>
       <div className="table-footer"><span>Showing <b>{visibleLeads.length}</b> of {leads.length} matching leads</span><span>Rows per page <select aria-label="Rows per page" value={pageSize} onChange={(event) => { setPageSize(event.target.value === 'all' ? 'all' : Number(event.target.value)); setPage(1); }}><option value={10}>10</option><option value={50}>50</option><option value={100}>100</option><option value="all">All</option></select> Page {currentPage} of {pageCount} <button disabled={currentPage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>←</button><button disabled={currentPage >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>→</button></span></div>
     </Card>
-    {editing && <LeadEditor lead={editing === 'new' ? undefined : editing} onClose={() => setEditing(null)} onSaved={refresh} />}
+    {editing && <LeadEditor lead={editing === 'new' ? undefined : editing} onClose={() => setEditing(null)} onSaved={async () => {
+      if (editing === 'new') {
+        setArchived(false); setPage(1); setQuery(''); setStage(''); setPriority(''); setIndustry('');
+        setSource(''); setOwner(''); setFollowup(''); setConnectionCategory('All Leads'); setSort('createdAt');
+      }
+      await refresh();
+    }} />}
     {details && <LeadDetails lead={details} onClose={() => setDetails(null)} onEdit={() => { setEditing(details); setDetails(null); }} />}
     {importOpen && <LeadImportWizard onClose={() => setImportOpen(false)} onImported={async () => {
       setArchived(false); setPage(1); setQuery(''); setStage(''); setPriority(''); setIndustry(''); setSource(''); setOwner(''); setFollowup(''); await refresh();

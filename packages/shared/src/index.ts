@@ -53,6 +53,7 @@ export type Lead = LeadInput & {
   alternativeContactMethod?: ContactMethod | null; alternativeContactNotes?: string;
   actualCloseAt?: string | null; closedById?: string | null; closedByName?: string | null; lossReason?: string;
   preCloseOpportunityStages?: { opportunityId: string; stage: Opportunity['stage'] }[];
+  isShared?: boolean;
 };
 
 export type CallRecord = {

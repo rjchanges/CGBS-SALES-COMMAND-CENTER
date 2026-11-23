@@ -1,10 +1,10 @@
 # Architecture
 
-## Local demo runtime
+## Runtime modes
 
-The Vite application on port 5173 calls the Express API on port 4100 through a development proxy. The API uses a local demo token and persists its state to apps/api/data/local.json. Writes are serialized within one API process and written through a temporary file rename to reduce partial-file risk.
+The Vite application on port 5173 calls the Express API on port 4100 through a development proxy. With `DEMO_MODE=true` outside production, the API uses a local demo token and persists fictional data to `apps/api/data/local.json`. Writes are serialized within one API process and written through a temporary file rename to reduce partial-file risk.
 
-The demo dataset is fictional. It is seeded on first read and can be reset with the project reset script. This storage and authentication arrangement is for a single-user preview only.
+With `DEMO_MODE=false`, the API validates Supabase access tokens and the PostgreSQL adapter runs CRM transactions as the authenticated database role with verified JWT claims, so RLS policies apply. `DATABASE_URL` is server-only. Production never falls back to JSON storage.
 
 ## UI modules
 
@@ -14,7 +14,7 @@ Shared validation and calculations live in packages/shared. Forms use Zod and Re
 
 ## API
 
-Protected demo endpoints require Authorization: Bearer demo-session. The token is only valid while the local demo flag is enabled.
+Protected endpoints require a verified Supabase bearer token, except in explicit local demo mode, where they require `Authorization: Bearer demo-session`.
 
 - POST /api/auth/demo starts the local demo session.
 - GET /api/bootstrap returns workspace data and dashboard metrics.
@@ -34,6 +34,6 @@ Protected demo endpoints require Authorization: Bearer demo-session. The token i
 
 The API applies a JSON request size limit, CORS and rate limiting. The optional AI key is read by the server only.
 
-## Production work still required
+## Deployment considerations
 
-The migration and RLS policies are schema foundations, not an active adapter. Before deployment, replace local JSON storage and demo authentication with Supabase Auth and user-scoped PostgreSQL queries. Map profile roles to server authorization, test RLS with separate users, add audit-log writes, schedule reminders in a backend job service, and implement secure Microsoft OAuth token storage.
+The API health endpoint reports URL validation, connection status, and required schema compatibility. Review pending migrations before applying them to production. Scheduled reminders currently run in the API process and may need a durable worker for stricter delivery guarantees. Microsoft Graph OAuth token storage is not implemented.

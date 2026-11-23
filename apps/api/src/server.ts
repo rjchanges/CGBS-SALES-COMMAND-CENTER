@@ -8,7 +8,7 @@ import {
   leadSchema, leadStatuses, safeWebsiteUrl,
   type CGBSState, type FollowUpTask, type Lead, type LeadInput, type LeadStatus, type Opportunity,
 } from '../../../packages/shared/dist/index.js';
-import { requireDemoSession, type AuthedRequest } from './auth.js';
+import { createSupabaseClient, requireAuth, requireDemoSession, type AuthedRequest } from './auth.js';
 import { importLeadBatch } from './leadImportService.js';
 import { CallServiceError, recordCall, recordVoiceCallOutcome } from './callService.js';
 import { FollowUpSalesError, saveLeadSalesDetails, updateFollowUpSalesDetails } from './followUpSalesService.js';
@@ -22,11 +22,37 @@ import { OpportunityServiceError, reopenOpportunity, transitionOpportunityStage 
 import { exotelConfig, connectTwoNumbers, getExotelCallDetails, sendExotelVerificationSms } from './exotelClient.js';
 import { isE164PhoneNumber } from './phoneNumber.js';
 import { applyVoiceStatus, canViewVoiceCall, callingProfile, prepareVoiceCall, savePendingPhone, statusFromProvider, verifyExotelBasicAuth, verifyPendingPhone, VoiceCallError } from './voiceCallService.js';
+import { applyVoiceWebhook, checkDatabaseHealth, databaseConfiguration, databaseConnectionErrorMessage, dispatchDueRemindersDatabase, closeDatabasePool } from './postgresStore.js';
+import { createHealthHandler } from './healthRoute.js';
+import { configureRenderProxyTrust } from './proxyTrust.js';
+import { createRetryingScheduler } from './reminderScheduler.js';
 
 const app = express();
+configureRenderProxyTrust(app);
 const port = Number(process.env.PORT || 4100);
-const demoMode = process.env.DEMO_MODE !== 'false';
-app.use(cors({ origin: process.env.WEB_ORIGIN || 'http://localhost:5173' }));
+const demoMode = process.env.DEMO_MODE === 'true' && process.env.NODE_ENV !== 'production';
+
+let authMiddleware: ReturnType<typeof requireAuth> | ReturnType<typeof requireDemoSession>;
+if (!demoMode) {
+  const supabase = createSupabaseClient();
+  authMiddleware = requireAuth(supabase);
+} else {
+  authMiddleware = requireDemoSession(demoMode);
+}
+const configuredWebOrigins = (process.env.WEB_ORIGIN || 'http://localhost:5173')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const deployedWebOrigin = 'https://cgbs-sales-command-center-1.onrender.com';
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || configuredWebOrigins.includes(origin) || origin === deployedWebOrigin) {
+      callback(null, true);
+      return;
+    }
+    callback(null, false);
+  },
+}));
 app.use(express.json({ limit: '4mb' }));
 app.use(express.urlencoded({ extended: false }));
 app.use('/api', rateLimit({ windowMs: 60_000, limit: 180, standardHeaders: 'draft-7', legacyHeaders: false }));
@@ -38,8 +64,8 @@ api.post('/auth/demo', (_req, res) => {
   if (!demoMode) return res.status(403).json({ error: 'Local demo access is disabled.' });
   res.json({ accessToken: 'demo-session', user: { id: 'demo-admin', name: 'Rahul Raj M', role: 'Admin' }, mode: 'local-demo' });
 });
-api.get('/auth/config', (_req, res) => res.json({ demoMode, authProvider: demoMode ? 'local-demo' : 'unconfigured', emailConfigured: false }));
-api.get('/health', (_req, res) => res.json({ status: 'ok', mode: demoMode ? 'local-demo' : 'production', timestamp: new Date().toISOString() }));
+api.get('/auth/config', (_req, res) => res.json({ demoMode, authProvider: demoMode ? 'local-demo' : 'supabase', supabaseUrl: demoMode ? null : process.env.SUPABASE_URL, emailConfigured: !demoMode }));
+api.get('/health', createHealthHandler(demoMode));
 
 app.post('/api/exotel/callback', async (req, res) => {
   const config = exotelConfig(process.env);
@@ -52,6 +78,10 @@ app.post('/api/exotel/callback', async (req, res) => {
   if (!sid && !customField) return res.status(400).json({ error: 'Callback is missing the Exotel call identifier.' });
   const status = eventType === 'answered' ? 'Connecting to Client' : statusFromProvider(body.Status || body.status, body.Leg1Status, body.Leg2Status, Number(body.ConversationDuration || body.Duration || body.duration || 0) || null);
   if (!status) return res.status(200).json({ accepted: true, ignored: true });
+  if (!demoMode) {
+    const updated = await applyVoiceWebhook({ providerCallId: sid, customCallId: customField, eventId, status, startedAt: providerDate(body.StartTime || body.start_time), endedAt: providerDate(body.EndTime || body.end_time), durationSeconds: Number(body.ConversationDuration || body.Duration || body.duration || 0) || null });
+    return res.status(200).json({ accepted: true, updated });
+  }
   const { result } = await updateStore((state) => {
     const call = state.voiceCalls.find((item) => (sid && item.providerCallId === sid) || (customField && item.id === customField));
     if (!call) return false;
@@ -61,7 +91,8 @@ app.post('/api/exotel/callback', async (req, res) => {
   });
   res.status(200).json({ accepted: true, updated: result });
 });
-api.use(requireDemoSession(demoMode));
+api.use(authMiddleware);
+api.get('/auth/me', (req: AuthedRequest, res) => res.json({ user: req.user }));
 
 function activity(state: CGBSState, leadId: string, type: 'Call' | 'Stage change' | 'Follow-up' | 'Note' | 'Opportunity' | 'Lead update', title: string, detail: string, createdBy = 'Rahul Raj M') {
   state.activities.unshift({ id: randomUUID(), leadId, type, title, detail, createdAt: new Date().toISOString(), createdBy: createdBy });
@@ -71,9 +102,9 @@ function providerDate(value: unknown): string | null {
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
 }
-function asLead(input: LeadInput): Lead {
+function asLead(input: LeadInput, actorName = 'Rahul Raj M'): Lead {
   const now = new Date().toISOString();
-  return { ...input, website: safeWebsiteUrl(input.website) ?? '', companyLogo: safeWebsiteUrl(input.companyLogo) ?? '', id: randomUUID(), createdAt: now, updatedAt: now, lastContacted: null, archived: false, stageHistory: [{ status: input.status, at: now, by: 'Rahul Raj M' }], changeHistory: [] };
+  return { ...input, website: safeWebsiteUrl(input.website) ?? '', companyLogo: safeWebsiteUrl(input.companyLogo) ?? '', id: randomUUID(), createdAt: now, updatedAt: now, lastContacted: null, archived: false, stageHistory: [{ status: input.status, at: now, by: actorName }], changeHistory: [] };
 }
 function duplicateMessage(state: CGBSState, input: LeadInput, ignoreId?: string) {
   const email = input.email.toLowerCase();
@@ -87,7 +118,7 @@ api.get('/bootstrap', async (req: AuthedRequest, res) => {
   const data = await readStore();
   const actor = req.user!;
   const visibleTargets = data.targets.filter((target) => canAccessTarget(target, actor));
-  res.json({ user: actor, mode: 'local-demo', ...data, targets: visibleTargets, calendarEvents: [], reminders: listReminders(data, actor), notifications: data.notifications.filter((item) => item.userId === actor.id).slice(0, 100), metrics: calculateMetrics(data), targetPerformance: calculateTargetAchievements({ ...data, targets: visibleTargets }) });
+  res.json({ user: actor, mode: demoMode ? 'local-demo' : 'postgresql', ...data, targets: visibleTargets, calendarEvents: [], reminders: listReminders(data, actor), notifications: data.notifications.filter((item) => item.userId === actor.id).slice(0, 100), metrics: calculateMetrics(data), targetPerformance: calculateTargetAchievements({ ...data, targets: visibleTargets }) });
 });
 
 api.get('/leads', async (req, res) => {
@@ -102,12 +133,13 @@ api.get('/leads', async (req, res) => {
 api.post('/leads', async (req: AuthedRequest, res) => {
   const parsed = leadSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid lead data.' });
+  const actorName = req.user?.name || parsed.data.assignedTo;
   const { result } = await updateStore((data) => {
     const duplicate = duplicateMessage(data, parsed.data);
     if (duplicate) return { error: 'A lead with matching contact details already exists: ' + duplicate.name + ' · ' + duplicate.company };
-    const created = asLead({ ...parsed.data, assignedTo: req.user?.name || parsed.data.assignedTo });
+    const created = asLead({ ...parsed.data, assignedTo: actorName }, actorName);
     data.leads.unshift(created);
-    activity(data, created.id, 'Note', 'Lead created', 'Lead added to the workspace.');
+    activity(data, created.id, 'Note', 'Lead created', 'Lead added to the workspace.', actorName);
     return { lead: created };
   });
   if ('error' in result) return res.status(409).json({ error: result.error });
@@ -498,16 +530,72 @@ api.get('/reports/data', async (req: AuthedRequest, res) => {
   const actor = req.user!;
   const scoped = scopeReportRecords(await readStore(), actor);
   const targets = scoped.targets.filter((target) => canAccessTarget(target, actor));
-  res.json({ user: actor, mode: 'local-demo', ...scoped, metrics: calculateMetrics(scoped), targetPerformance: calculateTargetAchievements({ ...scoped, targets }) });
+  res.json({ user: actor, mode: demoMode ? 'local-demo' : 'postgresql', ...scoped, metrics: calculateMetrics(scoped), targetPerformance: calculateTargetAchievements({ ...scoped, targets }) });
 });
 api.get('/reports/summary', async (_req, res) => res.json(calculateMetrics(await readStore())));
 app.use('/api', api);
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
-  console.error(error);
+  const databaseCode = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code?: unknown }).code || '') : '';
+  const pgDetail = typeof error === 'object' && error !== null && 'detail' in error ? String((error as { detail?: unknown }).detail || '') : '';
+  const pgTable = typeof error === 'object' && error !== null && 'table' in error ? String((error as { table?: unknown }).table || '') : '';
+  const pgConstraint = typeof error === 'object' && error !== null && 'constraint' in error ? String((error as { constraint?: unknown }).constraint || '') : '';
+  if (!demoMode) {
+    const configuration = databaseConfiguration();
+    if (!configuration.configured) return res.status(503).json({ error: configuration.error || 'PostgreSQL database configuration is invalid.' });
+    if (databaseCode === '42P01' || databaseCode === '42703') return res.status(503).json({ error: 'The PostgreSQL CRM schema is incomplete. Apply the reviewed storage migration and check /api/health.' });
+    if (databaseCode === '23505') return res.status(409).json({ error: 'This change conflicts with an existing CRM record.' });
+    const connectionError = databaseConnectionErrorMessage(databaseCode);
+    if (connectionError) return res.status(503).json({ error: connectionError });
+    console.error('CRM PostgreSQL request failed:', {
+      message: error instanceof Error ? error.message : 'unknown database error',
+      code: databaseCode || null,
+      detail: pgDetail || null,
+      table: pgTable || null,
+      constraint: pgConstraint || null,
+    });
+    if (databaseCode === '42501') {
+      return res.status(403).json({
+        error: `PostgreSQL RLS denied ${pgTable ? `the ${pgTable} table` : 'this CRM database operation'}${pgConstraint ? ` (${pgConstraint})` : ''}.`,
+      });
+    }
+    return res.status(503).json({ error: 'The CRM database request failed. Check /api/health and the API logs.' });
+  }
+  console.error(error instanceof Error ? error.message : error);
   res.status(500).json({ error: 'Unexpected server error. Check API logs for details.' });
 });
-app.listen(port, () => { console.log('CGBS API listening on http://localhost:' + port + ' (' + (demoMode ? 'local demo mode' : 'production auth required') + ')'); void deliverReminders(); setInterval(() => void deliverReminders(), 15_000); });
-async function deliverReminders() { try { const state = await readStore(); const due = state.reminders.some((item) => item.enabled && item.status === 'Pending' && Date.parse(item.sendAt) <= Date.now()); if (due) await updateStore((next) => dispatchDueReminders(next)); } catch (error) { console.error('Reminder scheduler error', error); } }
+
+const reminderSchedulerTick = createRetryingScheduler(async () => {
+  if (!demoMode) return dispatchDueRemindersDatabase();
+  const state = await readStore();
+  const due = state.reminders.some((item) => item.enabled && item.status === 'Pending' && Date.parse(item.sendAt) <= Date.now());
+  if (due) await updateStore((next) => dispatchDueReminders(next));
+}, (error) => {
+  const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code?: unknown }).code || '') : '';
+  return databaseConnectionErrorMessage(code) || (code ? `Reminder storage operation failed (database error ${code}). Check /api/health.` : 'Reminder storage operation failed. Check /api/health and the API logs.');
+});
+let reminderInterval: NodeJS.Timeout | undefined;
+
+const httpServer = app.listen(port, () => {
+  console.log('CGBS API listening on http://localhost:' + port + ' (' + (demoMode ? 'local demo mode' : 'Supabase-authenticated PostgreSQL mode') + ')');
+  if (demoMode) { void reminderSchedulerTick(); reminderInterval = setInterval(() => void reminderSchedulerTick(), 15_000); return; }
+  const configuration = databaseConfiguration();
+  if (!configuration.configured) console.error('CRM PostgreSQL configuration error:', configuration.error);
+  else {
+    void checkDatabaseHealth().then((health) => {
+      if (health.connected) console.info('CRM PostgreSQL readiness check passed.');
+      else console.error('CRM PostgreSQL readiness check failed:', health.error || 'database unavailable');
+    });
+    void reminderSchedulerTick(); reminderInterval = setInterval(() => void reminderSchedulerTick(), 15_000);
+  }
+});
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.once(signal, () => {
+    console.info(`Received ${signal}; closing the API and PostgreSQL pool.`);
+    if (reminderInterval) clearInterval(reminderInterval);
+    httpServer.close(() => { void closeDatabasePool().finally(() => process.exit(0)); });
+    setTimeout(() => process.exit(1), 10_000).unref();
+  });
+}
 
 function localOutreach(input: Pick<LeadInput, 'name' | 'company' | 'role' | 'industry' | 'notes'>) {
   const detail = input.notes ? ' I noted: “' + input.notes.slice(0, 180) + '”' : '';

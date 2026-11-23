@@ -25,7 +25,7 @@ const titles: Record<string, string> = {
 export function Shell() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { data, logout } = useApp();
+  const { data, user, error, logout } = useApp();
   const [open, setOpen] = useState(false);
   const [sidebarHidden, setSidebarHidden] = useState(() => localStorage.getItem('cgbs_sidebar_hidden') === 'true');
   const toggleSidebar = () => {
@@ -56,13 +56,13 @@ export function Shell() {
           <Icon size={19} strokeWidth={1.8} /><span>{label}</span>{label === 'Follow-ups' && data?.metrics.overdueFollowUps ? <i className="nav-count">{data.metrics.overdueFollowUps}</i> : null}
         </NavLink>
       )}</nav>
-      <div className="sidebar-bottom"><button className="help-link" onClick={() => window.alert('Use the Help section in README.md for setup and demo data instructions.')}><CircleHelp size={18} /><span>Help &amp; support</span></button><div className="side-profile"><div className="avatar avatar-lime">RR</div><div className="profile-text"><strong>Rahul Raj M</strong><span>Administrator</span></div><button className="icon-button side-more" title="Sign out" onClick={logout}><LogOut size={17} /></button></div></div>
+      <div className="sidebar-bottom"><button className="help-link" onClick={() => window.alert('Use the Help section in README.md for setup and demo data instructions.')}><CircleHelp size={18} /><span>Help &amp; support</span></button><div className="side-profile"><div className="avatar avatar-lime">{(data?.user.name || user?.name || 'U').split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase()}</div><div className="profile-text"><strong>{data?.user.name || user?.name || 'Account'}</strong><span>{data?.user.role || user?.role || 'User'}</span></div><button className="icon-button side-more" title="Sign out" onClick={logout}><LogOut size={17} /></button></div></div>
     </aside>
     {open && <button className="scrim" aria-label="Close navigation" onClick={() => setOpen(false)} />}
     <div className="main-area">
-      <header className="topbar"><div className="topbar-spacer"></div><div className="date-pill"><CalendarDays size={16} />{date}</div><button className="button button-dark add-lead-top" onClick={fireAdd}><span>＋</span> Add lead</button><div className="topbar-avatar-wrap"><button className="avatar avatar-dark" onClick={() => setUserMenu(!userMenu)} aria-label="Open profile menu">RR<ChevronDown size={13} /></button>{userMenu && <div className="user-menu"><strong>{data?.user.name}</strong><span>Administrator · Local demo</span><button onClick={logout}><LogOut size={15} /> Sign out</button></div>}</div></header>
-      <main className="content"><div className="mobile-page-title">{titles[location.pathname] || 'Workspace'}</div><Outlet /></main>
-      <footer className="app-footer"><span>© 2026 CGBS Sales Command Center</span><span><i className="status-dot" /> Demo workspace · Fictional sample records</span></footer>
+      <header className="topbar"><div className="topbar-spacer"></div><div className="date-pill"><CalendarDays size={16} />{date}</div><button className="button button-dark add-lead-top" onClick={fireAdd} disabled={!data}><span>＋</span> Add lead</button><div className="topbar-avatar-wrap"><button className="avatar avatar-dark" onClick={() => setUserMenu(!userMenu)} aria-label="Open profile menu">{(data?.user.name || user?.name || 'U').split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase()}<ChevronDown size={13} /></button>{userMenu && <div className="user-menu"><strong>{data?.user.name || user?.name}</strong><span>{data?.user.role || user?.role}</span><button onClick={logout}><LogOut size={15} /> Sign out</button></div>}</div></header>
+      <main className="content"><div className="mobile-page-title">{titles[location.pathname] || 'Workspace'}</div>{!data && error && <div className="inline-error" role="status">Signed in as {user?.email || user?.name}. {error}</div>}<Outlet /></main>
+      <footer className="app-footer"><span>© 2026 CGBS Sales Command Center</span><span><i className="status-dot" />{data?.mode === 'local-demo' ? 'Local demo · Fictional sample records' : 'Supabase Auth · PostgreSQL CRM workspace'}</span></footer>
     </div>
   </div>;
 }
