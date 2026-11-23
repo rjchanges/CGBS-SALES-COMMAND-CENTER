@@ -102,9 +102,9 @@ function providerDate(value: unknown): string | null {
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
 }
-function asLead(input: LeadInput): Lead {
+function asLead(input: LeadInput, actorName = 'Rahul Raj M'): Lead {
   const now = new Date().toISOString();
-  return { ...input, website: safeWebsiteUrl(input.website) ?? '', companyLogo: safeWebsiteUrl(input.companyLogo) ?? '', id: randomUUID(), createdAt: now, updatedAt: now, lastContacted: null, archived: false, stageHistory: [{ status: input.status, at: now, by: 'Rahul Raj M' }], changeHistory: [] };
+  return { ...input, website: safeWebsiteUrl(input.website) ?? '', companyLogo: safeWebsiteUrl(input.companyLogo) ?? '', id: randomUUID(), createdAt: now, updatedAt: now, lastContacted: null, archived: false, stageHistory: [{ status: input.status, at: now, by: actorName }], changeHistory: [] };
 }
 function duplicateMessage(state: CGBSState, input: LeadInput, ignoreId?: string) {
   const email = input.email.toLowerCase();
@@ -133,12 +133,13 @@ api.get('/leads', async (req, res) => {
 api.post('/leads', async (req: AuthedRequest, res) => {
   const parsed = leadSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid lead data.' });
+  const actorName = req.user?.name || parsed.data.assignedTo;
   const { result } = await updateStore((data) => {
     const duplicate = duplicateMessage(data, parsed.data);
     if (duplicate) return { error: 'A lead with matching contact details already exists: ' + duplicate.name + ' · ' + duplicate.company };
-    const created = asLead({ ...parsed.data, assignedTo: req.user?.name || parsed.data.assignedTo });
+    const created = asLead({ ...parsed.data, assignedTo: actorName }, actorName);
     data.leads.unshift(created);
-    activity(data, created.id, 'Note', 'Lead created', 'Lead added to the workspace.');
+    activity(data, created.id, 'Note', 'Lead created', 'Lead added to the workspace.', actorName);
     return { lead: created };
   });
   if ('error' in result) return res.status(409).json({ error: result.error });
